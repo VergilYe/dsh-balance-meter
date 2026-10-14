@@ -1,4 +1,4 @@
-# dsh-balance-meter bundle layer: register this plugin's Loader row.
+# @dsh/dsh-balance bundle layer: register this plugin's Loader row.
 #
 # The row id `balance-meter` is also the settings namespace the plugin's own
 # tools write to (`balance_set_endpoint` edits this row's `config:` block in the
@@ -10,7 +10,7 @@
 # or by the plugin's own tools, never preset by the plugin author.
 - insert:
     - id: balance-meter
-      name: dsh-balance-meter
+      name: "@dsh/dsh-balance"
       config:
         autoRefresh: true
         minIntervalSec: 30

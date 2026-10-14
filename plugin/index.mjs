@@ -1,5 +1,5 @@
 /**
- * dsh-balance-meter — host half.
+ * @dsh/dsh-balance — host half.
  *
  * A standard DSH plugin: named exports `name` / `inject` / `Config` / `apply`,
  * tools built with the official `defineTool` and registered through
@@ -29,7 +29,7 @@ import { runPresetQuery } from './presets.mjs'
 import { STATUS, createStore } from './state.mjs'
 import { collectLlmRows, discoverRoutes, pickPrimaryRoute } from './routes.mjs'
 
-export const name = 'dsh-balance-meter'
+export const name = '@dsh/dsh-balance'
 
 /** `tools` is the one hard requirement; everything else is wired opportunistically. */
 export const inject = ['tools']
@@ -669,7 +669,7 @@ export function apply(ctx, config) {
       const rows = typeof editor.entries === 'function' ? editor.entries() : []
       return rows.find((row) => row === own)
         ?? rows.find((row) => row?.options?.id === ENTRY_NS)
-        ?? rows.find((row) => row?.options?.name === 'dsh-balance-meter')
+        ?? rows.find((row) => row?.options?.name === '@dsh/dsh-balance')
     } catch {
       return undefined
     }

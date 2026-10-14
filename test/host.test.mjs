@@ -80,7 +80,7 @@ function toolNamed(registered, toolName) {
 
 describe('apply — registration', () => {
   it('exports the plugin name DSH addresses it by', () => {
-    assert.equal(pluginName, 'dsh-balance-meter')
+    assert.equal(pluginName, '@dsh/dsh-balance')
   })
 
   it('registers exactly the two documented tools', () => {
@@ -517,7 +517,7 @@ describe('balance_set_endpoint', () => {
   }
 
   it('writes the endpoint into this plugin\'s own row', async () => {
-    const entries = [{ options: { id: 'balance-meter', name: 'dsh-balance-meter', config: {} } }]
+    const entries = [{ options: { id: 'balance-meter', name: '@dsh/dsh-balance', config: {} } }]
     const editor = editorStub(entries)
     const { ctx, registered } = makeCtx({
       entries,
@@ -538,7 +538,7 @@ describe('balance_set_endpoint', () => {
     const entries = [{
       options: {
         id: 'balance-meter',
-        name: 'dsh-balance-meter',
+        name: '@dsh/dsh-balance',
         config: { routes: [{ id: 'moonshot', baseURL: '', apiKeyEnv: '', endpoint: '{origin}/x' }] },
       },
     }]
@@ -553,7 +553,7 @@ describe('balance_set_endpoint', () => {
     const entries = [{
       options: {
         id: 'balance-meter',
-        name: 'dsh-balance-meter',
+        name: '@dsh/dsh-balance',
         config: { routes: [{ id: 'deepseek', baseURL: 'https://kept', apiKeyEnv: 'KEPT_KEY', endpoint: '{origin}/old' }] },
       },
     }]
@@ -570,7 +570,7 @@ describe('balance_set_endpoint', () => {
     const entries = [{
       options: {
         id: 'balance-meter',
-        name: 'dsh-balance-meter',
+        name: '@dsh/dsh-balance',
         config: { routes: [{ id: 'deepseek', endpoint: '{origin}/x' }] },
       },
     }]
@@ -599,7 +599,7 @@ describe('balance_set_endpoint', () => {
   })
 
   it('surfaces a write failure instead of claiming success', async () => {
-    const entries = [{ options: { id: 'balance-meter', name: 'dsh-balance-meter', config: {} } }]
+    const entries = [{ options: { id: 'balance-meter', name: '@dsh/dsh-balance', config: {} } }]
     const { ctx, registered } = makeCtx({
       entries,
       services: {
