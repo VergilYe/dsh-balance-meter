@@ -7,3 +7,6 @@ node_modules/
 
 # 本地研究中间产物（DSH 安装包内的 SDK 摘录等）
 .dsh-research/
+
+# 打包产物（发布用，不入库）
+*.tgz
