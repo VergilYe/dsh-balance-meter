@@ -50,6 +50,19 @@ function fullContext(extra = {}, entries = []) {
   })
 }
 
+/** A context that also registers the snapshot route, for route-scoped tests. */
+function snapshotContext(providers) {
+  const routes = []
+  const harness = makeCtx({
+    services: {
+      credentials: { resolve: async () => ({ value: 'sk-x', source: 'file' }) },
+      llm: { listProviders: () => providers },
+      connection: { fetch: { register: (route) => routes.push(route) } },
+    },
+  })
+  return { ...harness, routes }
+}
+
 /** @type {ReturnType<typeof stubGlobalFetch> | undefined} */
 let fetchStub
 
@@ -303,6 +316,113 @@ describe('snapshot route', () => {
     const { body } = await snapshot(routes)
     assert.equal(body.primary, null)
     assert.deepEqual(body.routes, [])
+  })
+})
+
+describe('snapshot route scoping', () => {
+  /** Invoke a registered snapshot handler for one route id. */
+  async function ask(handler, query) {
+    const response = await handler.fetch(new Request(`http://localhost${SNAPSHOT_PATH}${query}`))
+    return response.json()
+  }
+
+  it('reports only the requested route, not the whole discovered catalogue', async () => {
+    // A real profile reports built-in adapters the user never configured.
+    fetchStub = stubGlobalFetch(() => jsonResponse(DEEPSEEK_BODY))
+    const { ctx, routes } = snapshotContext([
+      { id: 'deepseek' },
+      { id: 'deepseek-official' },
+      { id: 'deepseek-account' },
+    ])
+    apply(ctx, defaultConfig())
+    const body = await ask(routes[0], '?route=deepseek')
+
+    assert.equal(body.primary, 'deepseek')
+    assert.deepEqual(body.routes.map((route) => route.id), ['deepseek'])
+    assert.deepEqual(body.states.map((state) => state.key), ['deepseek'])
+  })
+
+  it('queries only the requested route, leaving the others untouched', async () => {
+    fetchStub = stubGlobalFetch(() => jsonResponse(DEEPSEEK_BODY))
+    const { ctx, routes } = snapshotContext([{ id: 'deepseek' }, { id: 'moonshot' }])
+    apply(ctx, defaultConfig())
+    await ask(routes[0], '?route=deepseek')
+    assert.equal(fetchStub.calls.length, 1)
+    assert.match(fetchStub.calls[0].url, /deepseek/)
+  })
+
+  it('reports an uncatalogued built-in honestly instead of hiding it', async () => {
+    fetchStub = stubGlobalFetch(() => jsonResponse(DEEPSEEK_BODY))
+    const { ctx, routes } = snapshotContext([{ id: 'deepseek-official' }])
+    apply(ctx, defaultConfig())
+    const body = await ask(routes[0], '?route=deepseek-official')
+
+    assert.equal(body.primary, 'deepseek-official')
+    assert.equal(body.states[0].status, 'unknown-provider')
+    assert.match(body.states[0].message, /未收录/)
+  })
+
+  it('says so when it knows nothing about the route at all', async () => {
+    const { ctx, routes } = snapshotContext([{ id: 'deepseek' }])
+    apply(ctx, defaultConfig())
+    const body = await ask(routes[0], '?route=ghost')
+    assert.match(body.error, /没有关于路由「ghost」的任何信息/)
+  })
+
+  it('falls back to the primary route when no route is named', async () => {
+    fetchStub = stubGlobalFetch(() => jsonResponse(DEEPSEEK_BODY))
+    const { ctx, routes } = snapshotContext([{ id: 'deepseek-official' }, { id: 'deepseek' }])
+    apply(ctx, defaultConfig())
+    const body = await ask(routes[0], '')
+    // `deepseek-official` is not catalogued, so the catalogued route wins.
+    assert.equal(body.primary, 'deepseek')
+    assert.deepEqual(body.routes.map((route) => route.id), ['deepseek'])
+  })
+})
+
+describe('refresh after each turn', () => {
+  it('re-queries the primary route when a turn ends', async () => {
+    fetchStub = stubGlobalFetch(() => jsonResponse(DEEPSEEK_BODY))
+    const harness = fullContext()
+    apply(harness.ctx, defaultConfig({ minIntervalSec: 0 }))
+    assert.equal(fetchStub.calls.length, 0)
+
+    harness.emit('session/event', {}, { type: 'turn/end', data: { turn: 1 } })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    assert.equal(fetchStub.calls.length, 1)
+  })
+
+  it('ignores every other session event', async () => {
+    fetchStub = stubGlobalFetch(() => jsonResponse(DEEPSEEK_BODY))
+    const harness = fullContext()
+    apply(harness.ctx, defaultConfig({ minIntervalSec: 0 }))
+    for (const type of ['turn/start', 'step/end', 'tool/result', 'assistant/message']) {
+      harness.emit('session/event', {}, { type })
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    assert.equal(fetchStub.calls.length, 0)
+  })
+
+  it('survives a malformed event without throwing', () => {
+    const harness = fullContext()
+    apply(harness.ctx, defaultConfig())
+    assert.doesNotThrow(() => {
+      harness.emit('session/event', {}, null)
+      harness.emit('session/event', {}, 'nope')
+      harness.emit('session/event', {})
+    })
+  })
+
+  it('still honours the throttle, so a burst of turns is not a burst of requests', async () => {
+    fetchStub = stubGlobalFetch(() => jsonResponse(DEEPSEEK_BODY))
+    const harness = fullContext()
+    apply(harness.ctx, defaultConfig({ minIntervalSec: 300 }))
+    harness.emit('session/event', {}, { type: 'turn/end' })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    harness.emit('session/event', {}, { type: 'turn/end' })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    assert.equal(fetchStub.calls.length, 1)
   })
 })
 

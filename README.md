@@ -32,13 +32,15 @@ dsh plugin --profile desktop remove dsh-balance-meter
 
 ## What it shows
 
-**Header readout** — the primary route's balance or quota. Click for a popover with:
+**The status row under the composer** — the same row as the built-in `1 turn 6 steps · 165 tok/s` pills, to their left. A balance route shows money (`¥12.34`); a subscription shows remaining quota (`每月 剩 47%`). Click for a popover with:
 
-- every route: vendor, billing mode, and the figure or quota windows it reports
-- the endpoint used, when it was last read, and the credential variable name
-- a **Refresh now** button that bypasses the failure cooldown and re-queries everything
+- the vendor, billing mode, credential variable, endpoint, and when it was last read
+- for subscriptions, every quota window (rolling / weekly / monthly) with a remaining-share bar and its reset time
+- a **Refresh now** button that bypasses the failure cooldown
 
-**Readings can be stale.** When an automatic query fails but a previous one succeeded, the readout keeps the older figure, marks it with a `·`, and the popover states the failure. A stale number is never presented as current.
+**It reports only the provider the current session actually uses.** The route comes from that session's model selection (`current.provider` in `modelDirectories`), not from every adapter registered in the build — `listProviders()` reports built-ins like `deepseek-official` and `deepseek-account` that the user never configured, and listing those is noise.
+
+**Readings can be stale.** When an automatic query fails but a previous one succeeded, the readout keeps the older figure, labels it stale, and the popover states the failure. A stale number is never presented as current.
 
 ## Catalogued providers
 
@@ -127,15 +129,33 @@ DSH host process                               browser
 └────────────────────────────────────┘       └────────────────────┘
 ```
 
-**Refresh policy.** The host holds no timer. The browser half polls the snapshot route every 60s, and the host decides whether that poll is allowed to become a real vendor request (bounded by `minIntervalSec` and the failure cooldown). Keeping the clock in the browser removes a whole class of lifecycle bugs, and nothing is lost: freshness matters only to the readout, which exists only while the page is visible. A hidden page does not poll.
+**Refresh policy.** The host holds no timer, and nothing guesses when a turn ended.
+
+- **After every turn**, the host listens for the session log's `turn/end` event and refreshes the current route. That event name is not guessed — it was read out of a real `session.v4.jsonl.zstd` (`{"type":"turn/end","data":{"turn":1,"reason":{…}}}`).
+- **The browser half** re-reads the host's **local cache** every 10s (not a vendor request), so a reading the host refreshed appears within 10s; switching the session's model re-reads immediately.
+- Vendor requests themselves are throttled host-side by `minIntervalSec` (default 30s) and the failure cooldown, so a burst of turns cannot become a burst of vendor requests. A hidden page does not poll.
 
 **Caching.** The endpoint that worked is cached per route; after every candidate fails the route enters a 10-minute cooldown; concurrent queries for one route coalesce into a single in-flight request.
 
 ## Known differences from the reference implementation
 
-- **Auto-refresh is poll-driven, not turn-end driven.** The reference hooks `usage://done`. DSH's session-event vocabulary is not publicly documented and I could not observe it in a live session, so rather than ship a guessed listener that would misfire on unrelated session events, this version polls. Adding the hook once the event shape is confirmed is a small, isolated change.
-- **The readout describes the primary route, not "the current session's route".** The header slot does receive a `sessionId`, but a stable host-side per-session model lookup was not confirmed. Resolution order is the configured `primary`, then the first catalogued route. Showing the default is preferred over claiming a session route and being wrong.
 - **No relay-station probing.** The reference carries seven probe chains for uncatalogued gateways. This version queries catalogued domains only — a deliberate trade: requesting unknown domains would void the "official hosts only" guarantee.
+- **Different surface.** The reference sits in the status bar; this one sits on the status row under the composer, which in DSH's slot system is `conversation.composer.dock` — the row the built-in session-stats pills use.
+- **An uncatalogued route is stated, not papered over.** If the session runs on a built-in such as `deepseek-official`, the readout says *Unavailable* and explains that **this plugin has not catalogued it**, rather than inventing a figure.
+
+## Which response shapes are verified
+
+The eight parsers were written from vendor documentation, and the author holds no keys for these vendors — **only OpenCode Go has been checked against a live response**, which is what fixed it:
+
+```json
+{"usage":{"rolling":{"status":"ok","percent":0,"resetsAt":"…"},
+          "weekly":{"status":"ok","percent":8,"resetsAt":"…"},
+          "monthly":{"status":"ok","percent":53,"resetsAt":"…"}}}
+```
+
+`percent` here is a **used** share, not a remaining one. That is inferable rather than assumed: a live account read `rolling: 0` while actively completing turns, which cannot mean "0% remaining". The remaining figure is derived from it, and the raw value is kept in the window note (`原始 percent=53`) so a change of convention at the vendor would be visible immediately.
+
+If any of the other seven disagrees with its documentation, it reports `parse-failed` and echoes the response — send that echo and it can be corrected.
 
 ## Development
 

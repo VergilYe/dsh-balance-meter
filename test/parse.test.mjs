@@ -208,20 +208,57 @@ describe('minimax', () => {
 })
 
 describe('opencodeGo', () => {
-  it('reads named windows', () => {
-    const result = parseResponse('opencodeGo', {
-      data: [
-        { window: 'rolling', used: 5, limit: 20 },
-        { window: 'monthly', used: 1, limit: 100 },
-      ],
-    })
-    assert.equal(result.windows.length, 2)
-    assert.match(result.display, /rolling/)
+  /**
+   * A real response captured from a live OpenCode Go route. Kept verbatim: this
+   * shape is what the parser has to satisfy, and it is the only vendor response
+   * in this suite that was observed rather than transcribed from documentation.
+   */
+  const LIVE = {
+    usage: {
+      rolling: { status: 'ok', percent: 0, resetsAt: '2026-10-14T21:46:48.000Z' },
+      weekly: { status: 'ok', percent: 8, resetsAt: '2026-10-19T00:00:00.000Z' },
+      monthly: { status: 'ok', percent: 53, resetsAt: '2026-10-19T09:07:55.000Z' },
+    },
+  }
+
+  it('reads the live shape end to end', () => {
+    const result = parseResponse('opencodeGo', LIVE)
+    assert.equal(result.kind, 'quota')
+    assert.deepEqual(result.windows.map((w) => w.key), ['rolling', 'weekly', 'monthly'])
+    assert.deepEqual(result.windows.map((w) => w.remainingPct), [100, 92, 47])
   })
 
-  it('tolerates a single nested window object rather than an array', () => {
-    const result = parseResponse('opencodeGo', { data: { window: 'weekly', used: 1, limit: 2 } })
-    assert.equal(result.windows.length, 1)
+  it('treats percent as a used share and derives the remaining one', () => {
+    // A live account read rolling:0 while actively completing turns, so 0
+    // cannot mean "0% remaining".
+    const result = parseResponse('opencodeGo', LIVE)
+    const rolling = result.windows[0]
+    assert.equal(rolling.remainingPct, 100)
+    assert.equal(rolling.note, '原始 percent=0')
+  })
+
+  it('shows the tightest window on the chip, saying which direction it means', () => {
+    assert.equal(parseResponse('opencodeGo', LIVE).display, '每月 剩 47%')
+  })
+
+  it('carries the reset time through for the UI to format', () => {
+    assert.equal(parseResponse('opencodeGo', LIVE).windows[0].resetAt, '2026-10-14T21:46:48.000Z')
+  })
+
+  it('labels the rolling window with its approximate span', () => {
+    assert.match(parseResponse('opencodeGo', LIVE).windows[0].label, /滚动/)
+  })
+
+  it('clamps a percent outside 0..100', () => {
+    const result = parseResponse('opencodeGo', { usage: { w: { percent: 130 } } })
+    assert.equal(result.windows[0].remainingPct, 0)
+  })
+
+  it('still reads a used/limit shape it has not seen', () => {
+    const result = parseResponse('opencodeGo', {
+      data: [{ window: 'rolling', used: 5, limit: 20 }],
+    })
+    assert.equal(result.windows[0].remainingPct, 75)
   })
 
   it('refuses a body with no window', () => {

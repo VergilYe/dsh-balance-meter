@@ -12,11 +12,17 @@
  *     than rendering.
  *
  * Two extension points are registered:
- *   - `conversation.session.header.utilities` — the balance chip in the session
- *     header, which is the whole point of the plugin;
- *   - `plugins.bundle.config` — a configuration form on this bundle's card on
- *     the Plugins page, so the scalar settings are editable without hand-editing
- *     the profile's cordis.patch.yml.
+ *   - `conversation.composer.dock` — the readout. This is the same slot the
+ *     shipped session-stats pills use (`id: "stats", order: 0`), so the readout
+ *     sits on that row; a negative order puts it to their left.
+ *   - `plugins.bundle.config` — a form on this bundle's card on the Plugins
+ *     page, so the scalar settings are editable without hand-editing the
+ *     profile's cordis.patch.yml.
+ *
+ * Which route it reports is NOT guessed. A slot's `inject` is handed the
+ * session id, and `modelDirectories` resolves that session's current
+ * provider/model selection, so the readout follows the model actually in use —
+ * rather than listing every adapter the build happens to ship.
  */
 
 window.__ModuleLoader__.load({
@@ -31,13 +37,9 @@ window.__ModuleLoader__.load({
 		const ENTRY_NS = 'balance-meter'
 		/** The snapshot route the host half registers. */
 		const SNAPSHOT_PATH = '/api/balance-meter/snapshot'
-		/** How often the chip asks the host for a snapshot while visible. */
-		const POLL_MS = 60000
-		/**
-		 * Fields the configuration form edits, each with its own dictionary keys.
-		 * The mapping is explicit because the config field names and the copy keys
-		 * are not derivable from one another.
-		 */
+		/** How often the readout re-reads the host cache. Cheap: it is a local read. */
+		const POLL_MS = 10000
+		/** Fields the configuration form edits, each with its own dictionary keys. */
 		const FORM_FIELDS = [
 			{ name: 'primary', label: 'fieldPrimary', hint: 'fieldPrimaryHint' },
 			{ name: 'autoRefresh', label: 'fieldAutoRefresh', hint: 'fieldAutoRefreshHint' },
@@ -48,7 +50,6 @@ window.__ModuleLoader__.load({
 			chip: 'Balance',
 			unavailable: 'Unavailable',
 			loading: 'Reading…',
-			noRoutes: 'No model routes found in this profile.',
 			refresh: 'Refresh now',
 			refreshing: 'Refreshing…',
 			queried: 'Read',
@@ -56,8 +57,8 @@ window.__ModuleLoader__.load({
 			stale: 'stale',
 			secondsAgo: 's ago',
 			minutesAgo: 'min ago',
-			detail: 'Details',
-			route: 'Route',
+			detail: 'Balance and quota',
+			close: 'Close',
 			provider: 'Provider',
 			billing: 'Billing',
 			billingApi: 'API balance',
@@ -65,15 +66,14 @@ window.__ModuleLoader__.load({
 			endpoint: 'Endpoint',
 			credential: 'Credential',
 			credentialUnset: 'not set',
-			source: 'Identified via',
-			window: 'Window',
-			close: 'Close',
-			formTitle: 'Balance meter',
+			quotaWindows: 'Quota windows',
+			resets: 'resets',
+			rawEcho: 'Raw response',
 			formHint: 'Saved to this profile’s cordis.patch.yml and applied immediately.',
 			fieldPrimary: 'Primary route',
-			fieldPrimaryHint: 'Route the header chip reports. Empty uses the first catalogued route.',
+			fieldPrimaryHint: 'Used only when no session model is resolved. Empty uses the first catalogued route.',
 			fieldAutoRefresh: 'Refresh automatically',
-			fieldAutoRefreshHint: 'Let the header chip trigger a vendor query while it is visible.',
+			fieldAutoRefreshHint: 'Let a finished turn trigger a vendor query, within the interval below.',
 			fieldMinInterval: 'Minimum interval (seconds)',
 			fieldMinIntervalHint: 'Floor between two automatic vendor queries for the same route.',
 			save: 'Save',
@@ -84,14 +84,12 @@ window.__ModuleLoader__.load({
 			overridden: 'Set in this profile',
 			readOnly: 'This deployment stores settings read-only.',
 			configUnavailable: 'This plugin is not loaded, so its configuration cannot be edited right now.',
-			rawEcho: 'Raw response',
 		}
 
 		const zh = {
 			chip: '余额',
 			unavailable: '无法查询',
 			loading: '读取中…',
-			noRoutes: '当前 profile 里没有发现模型路由。',
 			refresh: '立即刷新',
 			refreshing: '刷新中…',
 			queried: '读取于',
@@ -99,8 +97,8 @@ window.__ModuleLoader__.load({
 			stale: '可能已过期',
 			secondsAgo: ' 秒前',
 			minutesAgo: ' 分钟前',
-			detail: '详情',
-			route: '路由',
+			detail: '余额与余量',
+			close: '关闭',
 			provider: '供应商',
 			billing: '计费方式',
 			billingApi: 'API 余额',
@@ -108,15 +106,14 @@ window.__ModuleLoader__.load({
 			endpoint: '接口地址',
 			credential: '凭据变量',
 			credentialUnset: '未配置',
-			source: '识别来源',
-			window: '窗口',
-			close: '关闭',
-			formTitle: '余额与余量',
+			quotaWindows: '额度窗口',
+			resets: '重置',
+			rawEcho: '原始响应',
 			formHint: '保存会写入本 profile 的 cordis.patch.yml 并立即生效。',
-			fieldPrimary: '优先显示的路由',
-			fieldPrimaryHint: '标题栏读数显示哪条路由；留空则取目录里第一条可识别的路由。',
+			fieldPrimary: '兜底路由',
+			fieldPrimaryHint: '仅在未能解析出会话模型时使用；留空则取目录里第一条可识别的路由。',
 			fieldAutoRefresh: '自动刷新',
-			fieldAutoRefreshHint: '允许标题栏读数在可见时触发供应商查询。',
+			fieldAutoRefreshHint: '允许一轮对话结束后触发供应商查询，仍受下面的最小间隔约束。',
 			fieldMinInterval: '最小刷新间隔（秒）',
 			fieldMinIntervalHint: '同一路由两次自动查询之间的最短间隔。',
 			save: '保存',
@@ -127,37 +124,41 @@ window.__ModuleLoader__.load({
 			overridden: '本 profile 已设置',
 			readOnly: '本部署的设置为只读。',
 			configUnavailable: '该插件当前未加载，暂时无法编辑它的配置。',
-			rawEcho: '原始响应',
 		}
 
 		/**
 		 * Styles under this plugin's own prefix, using only host tokens so a
-		 * theme change can never make the chip unreadable.
+		 * theme change can never make the readout unreadable. Sized to sit on the
+		 * stats row, and the popover opens upward because that row is at the
+		 * bottom of the window.
 		 */
 		const CSS = [
-			'.dsh-balance-anchor{position:relative;display:inline-flex;align-items:center}',
-			'.dsh-balance-chip{display:inline-flex;align-items:center;gap:6px;appearance:none;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3);border-radius:var(--dsw-radius-md);padding:3px 8px;font:inherit;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-primary);cursor:pointer;max-width:260px}',
-			'.dsh-balance-chip:hover{background:var(--dsw-alias-bg-layer-4)}',
+			'.dsh-balance-anchor{position:relative;display:inline-flex;align-items:center;min-width:0}',
+			'.dsh-balance-chip{display:inline-flex;align-items:center;gap:5px;appearance:none;border:none;background:none;padding:1px 6px;margin:0;font:inherit;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary);cursor:pointer;border-radius:var(--dsw-radius-sm);max-width:240px}',
+			'.dsh-balance-chip:hover,.dsh-balance-chip[aria-expanded="true"]{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
 			'.dsh-balance-chip:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:1px}',
-			'.dsh-balance-vendor{color:var(--dsw-alias-label-tertiary);flex:0 0 auto}',
-			'.dsh-balance-value{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-			'.dsh-balance-value[data-ok="false"]{color:var(--dsw-alias-label-tertiary);font-weight:400}',
-			'.dsh-balance-stale{color:var(--dsw-alias-label-tertiary);flex:0 0 auto}',
-			'.dsh-balance-pop{position:absolute;top:calc(100% + 6px);right:0;z-index:40;width:340px;max-height:70vh;overflow:auto;padding:12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-3);box-shadow:0 8px 24px rgba(0,0,0,.18);font-size:12px;line-height:1.6;color:var(--dsw-alias-label-primary)}',
+			'.dsh-balance-dot{width:6px;height:6px;border-radius:50%;flex:none;background:var(--dsw-alias-label-tertiary)}',
+			'.dsh-balance-dot[data-ok="true"]{background:var(--dsw-alias-state-business-primary)}',
+			'.dsh-balance-value{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+			'.dsh-balance-value[data-ok="false"]{color:var(--dsw-alias-label-tertiary)}',
+			'.dsh-balance-pop{position:absolute;bottom:calc(100% + 8px);left:0;z-index:60;width:360px;max-height:70vh;overflow:auto;padding:12px;border:0.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-3);box-shadow:0 8px 24px rgba(0,0,0,.18);font:inherit;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-primary);text-align:left;cursor:default}',
 			'.dsh-balance-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}',
 			'.dsh-balance-title{font-size:13px;font-weight:500}',
 			'.dsh-balance-close{border:none;background:none;padding:0 2px;font:inherit;font-size:12px;color:var(--dsw-alias-label-tertiary);cursor:pointer}',
-			'.dsh-balance-close:hover{color:var(--dsh-alias-label-primary)}',
-			'.dsh-balance-row{display:grid;grid-template-columns:76px 1fr;gap:8px;padding:2px 0}',
+			'.dsh-balance-close:hover{color:var(--dsw-alias-label-primary)}',
+			'.dsh-balance-hero{font-size:20px;font-weight:600;line-height:1.4;margin:2px 0 6px}',
+			'.dsh-balance-row{display:grid;grid-template-columns:84px 1fr;gap:8px;padding:2px 0}',
 			'.dsh-balance-key{color:var(--dsw-alias-label-tertiary)}',
 			'.dsh-balance-val{word-break:break-all}',
 			'.dsh-balance-sep{height:0.5px;background:var(--dsw-alias-border-l4);margin:10px 0}',
-			'.dsh-balance-route{padding:6px 0}',
-			'.dsh-balance-route-name{font-weight:500}',
-			'.dsh-balance-route-meta{color:var(--dsw-alias-label-tertiary)}',
+			'.dsh-balance-win{padding:5px 0}',
+			'.dsh-balance-winname{font-weight:500}',
+			'.dsh-balance-winnote{color:var(--dsw-alias-label-tertiary)}',
+			'.dsh-balance-bar{height:3px;border-radius:2px;background:var(--dsw-alias-bg-layer-4);margin:5px 0 2px;overflow:hidden}',
+			'.dsh-balance-barfill{height:100%;background:var(--dsw-alias-state-business-primary)}',
 			'.dsh-balance-msg{margin:4px 0 0;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word}',
-			'.dsh-balance-msg[data-error="true"]{color:var(--dsh-alias-label-error)}',
-			'.dsh-balance-raw{margin:4px 0 0;padding:6px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-4);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:140px;overflow:auto}',
+			'.dsh-balance-msg[data-error="true"]{color:var(--dsw-alias-label-error)}',
+			'.dsh-balance-raw{margin:4px 0 0;padding:6px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-4);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:160px;overflow:auto}',
 			'.dsh-balance-foot{display:flex;align-items:center;gap:8px;margin-top:10px}',
 			'.dsh-balance-btn{appearance:none;border:1px solid transparent;border-radius:var(--dsw-radius-md);padding:4px 12px;font:inherit;font-size:12px;line-height:1.5;cursor:pointer;background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3)}',
 			'.dsh-balance-btn:disabled{opacity:.4;cursor:default}',
@@ -172,7 +173,7 @@ window.__ModuleLoader__.load({
 			'.dsh-balance-input:disabled{color:var(--dsw-alias-label-tertiary)}',
 			'.dsh-balance-check{display:flex;align-items:center;gap:8px}',
 			'.dsh-balance-hint{margin:0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
-			'.dsh-balance-reset{border:none;background:none;padding:0;font:inherit;font-size:12px;color:var(--dsh-alias-label-secondary);cursor:pointer}',
+			'.dsh-balance-reset{border:none;background:none;padding:0;font:inherit;font-size:12px;color:var(--dsw-alias-label-secondary);cursor:pointer}',
 			'.dsh-balance-reset:disabled{opacity:.4;cursor:default}',
 		].join('')
 
@@ -190,27 +191,38 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * Strip the scheme and trailing slash from a URL for compact display.
-		 * @param {unknown} url
+		 * Render an ISO reset time in the reader's own locale, degrading to the
+		 * raw string rather than throwing on an unexpected value.
+		 * @param {unknown} value
 		 * @returns {string}
 		 */
-		function shortUrl(url) {
-			if (typeof url !== 'string' || url === '') return '—'
-			return url.replace(/^https?:\/\//, '').replace(/\/$/, '')
+		function resetText(value) {
+			if (typeof value !== 'string' || value === '') return ''
+			const at = Date.parse(value)
+			if (!Number.isFinite(at)) return value
+			return new Date(at).toLocaleString(undefined, {
+				month: 'numeric',
+				day: 'numeric',
+				hour: '2-digit',
+				minute: '2-digit',
+			})
 		}
 
 		/**
 		 * Read the host snapshot.
 		 *
 		 * The request carries the page's session cookie automatically; a failure
-		 * here is reported in the chip rather than thrown, because the header
-		 * must keep rendering even when the host half is unavailable.
-		 * @param {boolean} refresh
+		 * here is reported in the readout rather than thrown, because the
+		 * composer must keep rendering even when the host half is unavailable.
+		 * @param {{ route: string | null, refresh: boolean }} query
 		 * @returns {Promise<object>}
 		 */
-		async function readSnapshot(refresh) {
-			const url = refresh ? `${SNAPSHOT_PATH}?refresh=1` : SNAPSHOT_PATH
-			const response = await fetch(url, {
+		async function readSnapshot(query) {
+			const params = new URLSearchParams()
+			if (query.route !== null && query.route !== '') params.set('route', query.route)
+			if (query.refresh) params.set('refresh', '1')
+			const suffix = params.toString() === '' ? '' : `?${params.toString()}`
+			const response = await fetch(`${SNAPSHOT_PATH}${suffix}`, {
 				method: 'GET',
 				credentials: 'same-origin',
 				headers: { accept: 'application/json' },
@@ -220,15 +232,87 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * The header chip.
+		 * Resolve a session's current provider.
+		 *
+		 * `modelDirectories.directoryFor(sessionId).store` holds the session's
+		 * live `{provider, model, reasoningEffort}` selection, so this follows the
+		 * model actually selected rather than assuming a default. Returns null
+		 * when any link in that chain is unavailable, which leaves the host to
+		 * fall back to its primary route.
+		 * @param {unknown} directories
+		 * @param {string | undefined} sessionId
+		 * @returns {object | null}
+		 */
+		function directoryFor(directories, sessionId) {
+			if (directories === null || typeof directories !== 'object') return null
+			if (typeof sessionId !== 'string' || sessionId === '') return null
+			try {
+				return typeof directories.directoryFor === 'function'
+					? directories.directoryFor(sessionId)
+					: null
+			} catch {
+				return null
+			}
+		}
+
+		/**
+		 * Subscribe to a session's model selection.
+		 * @param {object | null} directory
+		 * @returns {{provider: string | null, model: string | null}}
+		 */
+		function useModelSelection(directory) {
+			const store = directory !== null && typeof directory === 'object' ? directory.store : null
+			const subscribe = React.useCallback(
+				(listener) => (store !== null && typeof store.subscribe === 'function'
+					? store.subscribe(listener)
+					: () => {}),
+				[store],
+			)
+			const read = React.useCallback(
+				() => (store !== null && typeof store.getSnapshot === 'function'
+					? store.getSnapshot()
+					: null),
+				[store],
+			)
+			const snapshot = React.useSyncExternalStore(subscribe, read, read)
+
+			// Nudge the directory to load once; a failure is not ours to surface,
+			// because the selector the user actually drives reports its own.
+			React.useEffect(() => {
+				if (directory === null || typeof directory.load !== 'function') return
+				try {
+					Promise.resolve(directory.load()).catch(() => {})
+				} catch {
+					// A directory that refuses to load simply leaves provider null.
+				}
+			}, [directory])
+
+			const current = snapshot !== null && typeof snapshot === 'object' ? snapshot.current : null
+			const provider = current !== null && typeof current === 'object' ? current.provider : null
+			const model = current !== null && typeof current === 'object' ? current.model : null
+			return {
+				provider: typeof provider === 'string' && provider !== '' ? provider : null,
+				model: typeof model === 'string' && model !== '' ? model : null,
+			}
+		}
+
+		/**
+		 * The readout.
 		 *
 		 * Owns its own polling because the host keeps no timer: a poll asks for a
 		 * snapshot, and the host decides whether that poll is allowed to become a
-		 * real vendor request.
-		 * @param {{ t: (key: string) => string }} props
+		 * real vendor request. The host separately refreshes on `turn/end`, so a
+		 * poll mostly just picks up an already-fresh cached reading.
+		 * @param {{ t: (key: string) => string, sessionId?: string, directories?: unknown }} props
 		 */
-		function BalanceChip(props) {
-			const { t } = props
+		function BalanceReadout(props) {
+			const { t, sessionId, directories } = props
+			const directory = React.useMemo(
+				() => directoryFor(directories, sessionId),
+				[directories, sessionId],
+			)
+			const { provider } = useModelSelection(directory)
+
 			const [snapshot, setSnapshot] = React.useState(null)
 			const [error, setError] = React.useState(null)
 			const [busy, setBusy] = React.useState(false)
@@ -237,7 +321,7 @@ window.__ModuleLoader__.load({
 
 			const load = React.useCallback(async (refresh) => {
 				try {
-					const next = await readSnapshot(refresh)
+					const next = await readSnapshot({ route: provider, refresh })
 					setSnapshot(next)
 					setError(null)
 					return next
@@ -245,31 +329,22 @@ window.__ModuleLoader__.load({
 					setError(cause instanceof Error ? cause.message : String(cause))
 					return null
 				}
-			}, [])
+			}, [provider])
 
-			// Poll while the chip is mounted, and only while the page is visible:
-			// a hidden window has no reader, so its vendor calls would be waste.
+			// Re-read on mount, whenever the selected provider changes, and on a
+			// slow poll so a reading refreshed by the host shows up on its own.
 			React.useEffect(() => {
 				let alive = true
-				let timer
-				const tick = async () => {
+				void load(false)
+				const timer = setInterval(() => {
 					if (!alive) return
 					if (typeof document === 'undefined' || document.visibilityState === 'visible') {
-						await load(false)
+						void load(false)
 					}
-				}
-				void load(false)
-				timer = setInterval(() => {
-					void tick()
 				}, POLL_MS)
-				const onVisible = () => {
-					if (document.visibilityState === 'visible') void tick()
-				}
-				document.addEventListener('visibilitychange', onVisible)
 				return () => {
 					alive = false
 					clearInterval(timer)
-					document.removeEventListener('visibilitychange', onVisible)
 				}
 			}, [load])
 
@@ -292,25 +367,14 @@ window.__ModuleLoader__.load({
 
 			const routes = snapshot !== null && Array.isArray(snapshot.routes) ? snapshot.routes : []
 			const states = snapshot !== null && Array.isArray(snapshot.states) ? snapshot.states : []
-			const byKey = new Map(states.map((state) => [state.key, state]))
-			const primaryKey = snapshot === null ? null : snapshot.primary
-			const primaryState = primaryKey === null ? undefined : byKey.get(primaryKey)
-			const primaryRoute = routes.find((route) => route.key === primaryKey)
+			const route = routes[0]
+			const state = states[0]
+			const ok = state !== undefined && state !== null
+				&& state.status === 'ok' && state.result !== null
 
 			let text = t('loading')
-			let ok = false
-			if (error !== null) {
-				text = t('unavailable')
-			} else if (snapshot !== null) {
-				if (routes.length === 0) {
-					text = t('unavailable')
-				} else if (primaryState !== undefined && primaryState.status === 'ok' && primaryState.result !== null) {
-					text = primaryState.result.display
-					ok = true
-				} else {
-					text = t('unavailable')
-				}
-			}
+			if (error !== null) text = t('unavailable')
+			else if (snapshot !== null) text = ok ? state.result.display : t('unavailable')
 
 			/** Refresh on demand, bypassing the host's cooldown. */
 			async function refreshNow() {
@@ -331,13 +395,12 @@ window.__ModuleLoader__.load({
 						'aria-expanded': open ? 'true' : 'false',
 						onClick: () => setOpen((value) => !value),
 					},
-					primaryRoute === undefined
-						? null
-						: h('span', { className: 'dsh-balance-vendor' }, primaryRoute.label),
-					h('span', { className: 'dsh-balance-value', 'data-ok': ok ? 'true' : 'false' }, text),
-					primaryState !== undefined && primaryState.stale === true
-						? h('span', { className: 'dsh-balance-stale' }, '·')
-						: null,
+					h('span', { className: 'dsh-balance-dot', 'data-ok': ok ? 'true' : 'false' }),
+					h(
+						'span',
+						{ className: 'dsh-balance-value', 'data-ok': ok ? 'true' : 'false' },
+						text,
+					),
 				),
 				open
 					? h(
@@ -356,18 +419,87 @@ window.__ModuleLoader__.load({
 							error !== null
 								? h('p', { className: 'dsh-balance-msg', 'data-error': 'true' }, error)
 								: null,
-							routes.length === 0 && error === null
-								? h('p', { className: 'dsh-balance-msg' }, t('noRoutes'))
+							ok ? h('div', { className: 'dsh-balance-hero' }, state.result.display) : null,
+							ok && Array.isArray(state.result.windows) && state.result.windows.length > 0
+								? h(
+										'div',
+										null,
+										h('div', { className: 'dsh-balance-sep' }),
+										h('div', { className: 'dsh-balance-key' }, t('quotaWindows')),
+										state.result.windows.map((w, index) => h(WindowRow, { key: `${w.key}-${index}`, t, window: w })),
+									)
 								: null,
-							routes.map((route, index) =>
-								h(RouteBlock, {
-									key: route.key,
-									t,
-									route,
-									state: byKey.get(route.key),
-									first: index === 0,
-								}),
-							),
+							state !== undefined && state !== null && state.message !== null
+								? h(
+										'p',
+										{ className: 'dsh-balance-msg', 'data-error': state.status !== 'ok' ? 'true' : 'false' },
+										state.message,
+									)
+								: null,
+							snapshot !== null && snapshot.error !== undefined
+								? h('p', { className: 'dsh-balance-msg', 'data-error': 'true' }, snapshot.error)
+								: null,
+							state !== undefined && state !== null && typeof state.raw === 'string' && state.raw !== ''
+								? h(
+										'div',
+										null,
+										h('div', { className: 'dsh-balance-key' }, t('rawEcho')),
+										h('pre', { className: 'dsh-balance-raw' }, state.raw),
+									)
+								: null,
+							route !== undefined
+								? h(
+										'div',
+										null,
+										h('div', { className: 'dsh-balance-sep' }),
+										h(
+											'div',
+											{ className: 'dsh-balance-row' },
+											h('span', { className: 'dsh-balance-key' }, t('provider')),
+											h(
+												'span',
+												{ className: 'dsh-balance-val' },
+												route.apiKeyEnv === null || route.apiKeyEnv === ''
+													? `${route.label} · ${t('credentialUnset')}`
+													: `${route.label} · ${route.apiKeyEnv}`,
+											),
+										),
+										route.billing !== null
+											? h(
+													'div',
+													{ className: 'dsh-balance-row' },
+													h('span', { className: 'dsh-balance-key' }, t('billing')),
+													h(
+														'span',
+														{ className: 'dsh-balance-val' },
+														route.billing === 'subscription'
+															? t('billingSubscription')
+															: t('billingApi'),
+													),
+												)
+											: null,
+										state !== undefined && state !== null && state.url !== null
+											? h(
+													'div',
+													{ className: 'dsh-balance-row' },
+													h('span', { className: 'dsh-balance-key' }, t('endpoint')),
+													h('span', { className: 'dsh-balance-val' }, state.url.replace(/^https?:\/\//, '')),
+												)
+											: null,
+										h(
+											'div',
+											{ className: 'dsh-balance-row' },
+											h('span', { className: 'dsh-balance-key' }, t('queried')),
+											h(
+												'span',
+												{ className: 'dsh-balance-val' },
+												state === undefined || state === null
+													? t('never')
+													: `${ago(state.queriedAt, t)}${state.stale === true ? ` · ${t('stale')}` : ''}`,
+											),
+										),
+									)
+								: null,
 							h(
 								'div',
 								{ className: 'dsh-balance-foot' },
@@ -397,97 +529,40 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * One route's block inside the popover.
-		 * @param {{ t: (key: string) => string, route: object, state: object | undefined, first: boolean }} props
+		 * One quota window inside the popover, with a remaining-share bar.
+		 * @param {{ t: (key: string) => string, window: object }} props
 		 */
-		function RouteBlock(props) {
-			const { t, route, state, first } = props
-			const result = state !== undefined && state !== null ? state.result : null
+		function WindowRow(props) {
+			const { t, window: w } = props
+			const pct = typeof w.remainingPct === 'number' ? w.remainingPct : null
+			const reset = resetText(w.resetAt)
 			return h(
 				'div',
-				null,
-				first ? null : h('div', { className: 'dsh-balance-sep' }),
+				{ className: 'dsh-balance-win' },
 				h(
 					'div',
-					{ className: 'dsh-balance-route' },
-					h('div', { className: 'dsh-balance-route-name' }, route.label),
-					h(
-						'div',
-						{ className: 'dsh-balance-route-meta' },
-						route.billing === 'subscription'
-							? t('billingSubscription')
-							: route.billing === 'api'
-								? t('billingApi')
-								: t('route'),
-						state !== undefined && state !== null
-							? ` · ${t('queried')} ${ago(state.queriedAt, t)}`
-							: '',
-					),
+					null,
+					h('span', { className: 'dsh-balance-winname' }, w.label),
+					pct === null
+						? null
+						: h('span', { className: 'dsh-balance-winnote' }, ` · 剩 ${pct.toFixed(0)}%`),
+					reset === '' ? null : h('span', { className: 'dsh-balance-winnote' }, ` · ${t('resets')} ${reset}`),
 				),
-				result !== null
-					? result.detail.map((row, index) =>
-							h(
-								'div',
-								{ className: 'dsh-balance-row', key: `d${index}` },
-								h('span', { className: 'dsh-balance-key' }, row.label),
-								h('span', { className: 'dsh-balance-val' }, row.value),
-							),
-						)
-					: null,
-				state !== undefined && state !== null && state.message !== null
-					? h(
-							'p',
-							{ className: 'dsh-balance-msg', 'data-error': state.status !== 'ok' ? 'true' : 'false' },
-							state.message,
-						)
-					: null,
-				state !== undefined && state !== null && typeof state.raw === 'string' && state.raw !== ''
-					? h(
+				pct === null
+					? null
+					: h(
 							'div',
-							null,
-							h('div', { className: 'dsh-balance-key' }, t('rawEcho')),
-							h('pre', { className: 'dsh-balance-raw' }, state.raw),
-						)
-					: null,
-				h(
-					'div',
-					{ className: 'dsh-balance-row' },
-					h('span', { className: 'dsh-balance-key' }, t('provider')),
-					h(
-						'span',
-						{ className: 'dsh-balance-val' },
-						route.catalogued ? route.id : `${route.id}（${t('unavailable')}）`,
-					),
-				),
-				h(
-					'div',
-					{ className: 'dsh-balance-row' },
-					h('span', { className: 'dsh-balance-key' }, t('credential')),
-					h(
-						'span',
-						{ className: 'dsh-balance-val' },
-						route.apiKeyEnv === null || route.apiKeyEnv === ''
-							? t('credentialUnset')
-							: route.apiKeyEnv,
-					),
-				),
-				state !== undefined && state !== null && state.url !== null
-					? h(
-							'div',
-							{ className: 'dsh-balance-row' },
-							h('span', { className: 'dsh-balance-key' }, t('endpoint')),
-							h('span', { className: 'dsh-balance-val' }, shortUrl(state.url)),
-						)
-					: null,
+							{ className: 'dsh-balance-bar' },
+							h('div', { className: 'dsh-balance-barfill', style: { width: `${pct}%` } }),
+						),
+				w.note === undefined
+					? null
+					: h('div', { className: 'dsh-balance-winnote' }, w.note),
 			)
 		}
 
 		/**
 		 * The bundle's configuration form.
-		 *
-		 * A save goes through the settings scope, which writes the same profile
-		 * patch layer the `balance_set_endpoint` host tool writes, so both entry
-		 * points agree and the change applies without a restart.
 		 * @param {object} scope
 		 */
 		function configFormFor(scope) {
@@ -502,8 +577,8 @@ window.__ModuleLoader__.load({
 				const keepOutcome = React.useRef(false)
 
 				const subscribe = React.useMemo(() => (listener) => scope.subscribe(listener), [scope])
-				const readSnapshot = React.useMemo(() => () => scope.getSnapshot(), [scope])
-				const state = React.useSyncExternalStore(subscribe, readSnapshot, readSnapshot)
+				const readState = React.useMemo(() => () => scope.getSnapshot(), [scope])
+				const state = React.useSyncExternalStore(subscribe, readState, readState)
 				const revision = state === undefined || state === null ? undefined : state.revision
 				if (seenRevision !== revision) {
 					setSeenRevision(revision)
@@ -531,13 +606,12 @@ window.__ModuleLoader__.load({
 						: ''
 				}
 
-				/** Queue one field write and report whether the host accepted it. */
+				/** Queue field writes and report whether the host accepted them. */
 				async function commit(writes) {
 					setBusy(true)
 					setOutcome(null)
-					let accepted = false
+					let accepted = true
 					try {
-						accepted = true
 						for (const write of writes) {
 							if ((await write()) !== true) accepted = false
 						}
@@ -665,10 +739,7 @@ window.__ModuleLoader__.load({
 							? null
 							: h(
 									'span',
-									{
-										className: 'dsh-balance-hint',
-										role: 'status',
-									},
+									{ className: 'dsh-balance-hint', role: 'status' },
 									outcome === 'saved' ? t('saved') : t('failed'),
 								),
 					),
@@ -681,6 +752,16 @@ window.__ModuleLoader__.load({
 			inject: ['slots', 'locale'],
 			/** @param {object} ctx */
 			apply(ctx) {
+				/**
+				 * Session model directories, when the runtime provides them. Held in
+				 * a closure rather than read per render so a registration made before
+				 * the service exists still works once it arrives.
+				 */
+				let modelDirectories = null
+				ctx.inject(['modelDirectories'], (scope) => {
+					modelDirectories = scope.modelDirectories
+				})
+
 				ctx.effect(() => ctx.locale.register(LOCALE_NS, { zh, en }), 'balance-meter: dictionaries')
 				ctx.effect(() => {
 					const style = document.createElement('style')
@@ -692,16 +773,15 @@ window.__ModuleLoader__.load({
 					}
 				}, 'balance-meter: styles')
 
-				// The slot hands `inject` the session id, and this chip deliberately
-				// does not ask for it: the route it reports is the profile's primary
-				// one, not a per-session route. Taking a value it ignored would read
-				// as though per-session routing were implemented.
-				ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
-					name: 'conversation.session.header.utilities',
-					id: 'balance-meter',
-					order: -8,
+				// `order: -10` puts the readout to the left of the shipped stats
+				// pills, which register on this same row with `order: 0`.
+				ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
+					name: 'conversation.composer.dock',
+					id: 'balance',
+					order: -10,
 					locale: LOCALE_NS,
-				}, BalanceChip))
+					inject: (sessionId) => ({ sessionId, directories: modelDirectories }),
+				}, BalanceReadout))
 
 				// A form exists only where the Plugins page can carry one. Without
 				// `configForms` this half stays inert rather than rendering a form

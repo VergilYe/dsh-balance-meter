@@ -17,6 +17,8 @@ export function makeCtx(options = {}) {
   const services = options.services ?? {}
   const registered = []
   const effects = []
+  /** @type {Map<string, Function[]>} */
+  const listeners = new Map()
 
   const ctx = {
     tools: {
@@ -59,18 +61,43 @@ export function makeCtx(options = {}) {
         if (index >= 0) effects.splice(index, 1)
       }
     },
+    /**
+     * Subscribe to a cordis event, as the real context does.
+     * @param {string} event
+     * @param {Function} listener
+     */
+    on(event, listener) {
+      const bucket = listeners.get(event) ?? []
+      bucket.push(listener)
+      listeners.set(event, bucket)
+      return () => {
+        const index = bucket.indexOf(listener)
+        if (index >= 0) bucket.splice(index, 1)
+      }
+    },
   }
 
   return {
     ctx,
     registered,
     effects,
+    /**
+     * Fire an event at every listener registered for it, as cordis would.
+     * @param {string} event
+     * @param {...unknown} args
+     */
+    emit(event, ...args) {
+      for (const listener of [...(listeners.get(event) ?? [])]) {
+        listener(...args)
+      }
+    },
     /** Tear everything down, as unloading the plugin row would. */
     restore() {
       for (const row of [...effects].reverse()) {
         if (typeof row.disposer === 'function') row.disposer()
       }
       effects.length = 0
+      listeners.clear()
     },
   }
 }

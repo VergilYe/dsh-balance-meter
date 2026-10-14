@@ -478,46 +478,75 @@ export function apply(ctx, config) {
   /**
    * Answer one snapshot request.
    *
-   * `?refresh=1` asks for a fresh reading: the primary route is re-queried when
-   * policy allows, and the response always carries the current cache either way.
-   * The route never returns 5xx — a vendor problem is data (`status`), not a
-   * transport failure, so the chip can render the reason.
+   * `?route=<id>` scopes the whole response to the one route the caller cares
+   * about — normally the provider the session's model actually resolves to.
+   * Without it the response describes the primary route only, never the full
+   * discovered catalogue: `listProviders()` reports every adapter the build
+   * ships, including providers the user never configured, and showing those
+   * would be noise.
+   *
+   * `?refresh=1` asks for a fresh reading; policy still decides whether that
+   * becomes a vendor request. The route never returns 5xx — a vendor problem is
+   * data (`status`), not a transport failure, so the chip can render the reason.
    * @param {Request} request
    * @returns {Promise<Response>}
    */
   async function handleSnapshot(request) {
     const url = new URL(request.url)
     const wantsRefresh = url.searchParams.get('refresh') === '1'
+    const wanted = (url.searchParams.get('route') ?? '').trim()
     const headers = { 'cache-control': 'no-store', 'content-type': 'application/json' }
     try {
-      const all = knownRoutes()
-      if (wantsRefresh) {
-        // A manual refresh re-reads every catalogued route, because the user
-        // opening the detail popover wants all of them current, not just the chip.
-        await refresh({ force: true })
-      } else {
-        await refreshPrimary(false)
-      }
       const list = knownRoutes()
-      const primary = pickPrimaryRoute(list, textOf(cfg('primary')))
+      const selected = wanted === ''
+        ? [pickPrimaryRoute(list, textOf(cfg('primary')))].filter((route) => route !== null)
+        : list.filter((route) => route.id === wanted)
+
+      if (wanted !== '' && selected.length === 0) {
+        return Response.json({
+          primary: wanted,
+          routes: [],
+          states: [],
+          error: `本插件没有关于路由「${wanted}」的任何信息。`,
+        }, { headers })
+      }
+
+      await refresh({ routes: selected, force: wantsRefresh })
+
+      const keys = new Set(selected.map((route) => route.id))
       return Response.json({
-        primary: primary === null ? null : primary.id,
-        routes: list.map((route) => describeRoute(route)),
-        states: store.snapshot(),
+        primary: selected.length === 0 ? null : selected[0].id,
+        routes: selected.map((route) => describeRoute(route)),
+        states: store.snapshot().filter((state) => keys.has(state.key)),
         autoRefresh: cfg('autoRefresh') !== false,
         minIntervalSec: Math.round(minIntervalMs() / 1000),
         catalogSize: CATALOG.length,
-        known: all.length,
+        known: list.length,
       }, { headers })
     } catch (error) {
       return Response.json({
-        primary: null,
+        primary: wanted === '' ? null : wanted,
         routes: [],
         states: [],
         error: `快照生成失败：${errorMessage(error)}`,
       }, { headers })
     }
   }
+
+  // ── refresh after each turn ──────────────────────────────────────────────
+  // `turn/end` is the session-log event a completed turn writes; the shape was
+  // read off a real session log rather than guessed (`{type:"turn/end",
+  // data:{turn, reason}}`). The throttle still applies, so a burst of turns
+  // cannot turn into a burst of vendor requests.
+  ctx.on('session/event', (session, event) => {
+    try {
+      if (event === null || typeof event !== 'object' || event.type !== 'turn/end') return
+      // Only the route the chip reports is worth keeping warm on a turn.
+      void refreshPrimary(false)
+    } catch (error) {
+      warn(ctx, `turn-end refresh skipped: ${errorMessage(error)}`)
+    }
+  })
 
   // ── shared shaping ───────────────────────────────────────────────────────
   /**

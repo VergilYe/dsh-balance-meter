@@ -185,10 +185,13 @@ function quota(windows, detail = []) {
   const tightest = measurable.length
     ? measurable.reduce((min, w) => (w.remainingPct < min.remainingPct ? w : min))
     : null
+  // "剩" is spelled out because a bare "每月 47%" is ambiguous about which
+  // direction it measures — and so is any reading derived from a vendor's
+  // unlabelled percentage.
   const display =
     tightest === null
       ? windows[0].label
-      : `${tightest.label} ${tightest.remainingPct.toFixed(0)}%`
+      : `${tightest.label} 剩 ${tightest.remainingPct.toFixed(0)}%`
   return {
     kind: 'quota',
     currency: null,
@@ -204,15 +207,25 @@ function quota(windows, detail = []) {
 
 /**
  * Render one quota window as a single line.
+ *
+ * When the vendor reported a bare percentage, the raw figure is kept alongside
+ * the derived remaining figure — so a reading built on an assumption about
+ * which direction the vendor's percentage runs stays auditable.
  * @param {RawResult['windows'][number]} w
  * @returns {string}
  */
 export function describeWindow(w) {
+  const parts = []
   if (w.used !== null && w.limit !== null) {
-    return `已用 ${w.used} / ${w.limit}（剩 ${w.remainingPct === null ? '?' : w.remainingPct.toFixed(0)}%）`
+    const pct = w.remainingPct === null ? '?' : w.remainingPct.toFixed(0)
+    parts.push(`已用 ${w.used} / ${w.limit}（剩 ${pct}%）`)
+  } else if (w.remainingPct !== null) {
+    parts.push(`剩 ${w.remainingPct.toFixed(0)}%`)
   }
-  if (w.remainingPct !== null) return `剩 ${w.remainingPct.toFixed(0)}%`
-  return w.note ?? '接口未给出可读数值'
+  if (w.note !== undefined) parts.push(w.note)
+  if (parts.length === 0) parts.push('接口未给出可读数值')
+  if (typeof w.resetAt === 'string' && w.resetAt !== '') parts.push(`重置于 ${w.resetAt}`)
+  return parts.join(' · ')
 }
 
 /**
@@ -389,8 +402,45 @@ const PARSERS = {
     }
   },
 
-  /** `GET /zen/go/v1/usage` — rolling / weekly / monthly windows. */
+  /**
+   * `GET /zen/go/v1/usage` — rolling / weekly / monthly windows.
+   *
+   * Verified against a live response:
+   *   {"usage":{"rolling":{"status":"ok","percent":0,"resetsAt":"…"},
+   *             "weekly":{"status":"ok","percent":8,"resetsAt":"…"},
+   *             "monthly":{"status":"ok","percent":53,"resetsAt":"…"}}}
+   *
+   * `percent` is a USED share, not a remaining one. That is inferable rather
+   * than assumed: a live account read `rolling: 0` while actively completing
+   * turns, which cannot mean "0% remaining". The derived remaining is shown,
+   * and the raw figure is stated in the window note so the reading is
+   * auditable if this vendor ever flips the convention.
+   */
   opencodeGo(body) {
+    const usage = pick(body, 'usage')
+    const windows = []
+    if (usage !== null && typeof usage === 'object' && !Array.isArray(usage)) {
+      for (const [key, node] of Object.entries(usage)) {
+        if (node === null || typeof node !== 'object') continue
+        const percent = num(node.percent)
+        if (percent === null) continue
+        const remaining = clampPct(100 - percent)
+        windows.push({
+          key,
+          label: WINDOW_LABELS[key] ?? key,
+          used: null,
+          limit: null,
+          remainingPct: remaining,
+          note: `原始 percent=${percent}`,
+          ...(firstString(node, ['resetsAt', 'resetAt', 'reset_at']) === null
+            ? {}
+            : { resetAt: firstString(node, ['resetsAt', 'resetAt', 'reset_at']) }),
+        })
+      }
+      if (windows.length > 0) return quota(windows)
+    }
+
+    // Fall back to the generic scan for a shape this parser has not seen.
     const nodes = findObjects(body, (node) => {
       const hasPair = num(node.used) !== null && num(node.limit) !== null
       const hasPct = num(node.percentage) !== null || num(node.used_percent) !== null
@@ -398,7 +448,7 @@ const PARSERS = {
       return hasPair || hasPct || (hasWindow && num(node.remaining) !== null)
     })
     if (nodes.length === 0) throw new ParseError('响应里没有可识别的额度窗口')
-    const windows = nodes.map((node, index) =>
+    return quota(dedupeWindows(nodes.map((node, index) =>
       window_({
         key: `w${index}`,
         label: firstString(node, ['window', 'period', 'name', 'label']) ?? `窗口 ${index + 1}`,
@@ -407,9 +457,28 @@ const PARSERS = {
         percentage: num(node.percentage) ?? num(node.used_percent),
         resetAt: firstString(node, ['resetAt', 'reset_at', 'resetTime', 'resetsAt']),
       }),
-    )
-    return quota(dedupeWindows(windows))
+    )))
   },
+}
+
+/**
+ * Clamp a percentage into 0..100.
+ * @param {number} value
+ * @returns {number}
+ */
+function clampPct(value) {
+  return Math.max(0, Math.min(100, value))
+}
+
+/**
+ * Map a vendor's window key to a readable label.
+ * @param {string} key
+ * @returns {string}
+ */
+const WINDOW_LABELS = {
+  rolling: '滚动（约 5 小时）',
+  weekly: '每周',
+  monthly: '每月',
 }
 
 /**
