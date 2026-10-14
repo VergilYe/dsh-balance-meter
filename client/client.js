@@ -369,12 +369,19 @@ window.__ModuleLoader__.load({
 			const states = snapshot !== null && Array.isArray(snapshot.states) ? snapshot.states : []
 			const route = routes[0]
 			const state = states[0]
-			const ok = state !== undefined && state !== null
-				&& state.status === 'ok' && state.result !== null
+			// Whether there is a figure to render is the host's answer, not this
+			// file's: it sends `value` null when it has nothing, and keeps sending
+			// the last good figure — with `stale` set and `message` explaining why —
+			// when a later attempt failed. Deriving this from `status` here is what
+			// made a single failed automatic refresh blank a perfectly good reading.
+			const value = state !== undefined && state !== null && typeof state.value === 'string'
+				? state.value
+				: null
+			const hasValue = value !== null
+			const stale = state !== undefined && state !== null && state.stale === true
 
-			let text = t('loading')
-			if (error !== null) text = t('unavailable')
-			else if (snapshot !== null) text = ok ? state.result.display : t('unavailable')
+			let text = hasValue ? value : t('loading')
+			if (!hasValue && (error !== null || snapshot !== null)) text = t('unavailable')
 
 			/** Refresh on demand, bypassing the host's cooldown. */
 			async function refreshNow() {
@@ -395,10 +402,10 @@ window.__ModuleLoader__.load({
 						'aria-expanded': open ? 'true' : 'false',
 						onClick: () => setOpen((value) => !value),
 					},
-					h('span', { className: 'dsh-balance-dot', 'data-ok': ok ? 'true' : 'false' }),
+					h('span', { className: 'dsh-balance-dot', 'data-ok': hasValue ? 'true' : 'false' }),
 					h(
 						'span',
-						{ className: 'dsh-balance-value', 'data-ok': ok ? 'true' : 'false' },
+						{ className: 'dsh-balance-value', 'data-ok': stale ? 'false' : hasValue ? 'true' : 'false' },
 						text,
 					),
 				),
@@ -419,8 +426,17 @@ window.__ModuleLoader__.load({
 							error !== null
 								? h('p', { className: 'dsh-balance-msg', 'data-error': 'true' }, error)
 								: null,
-							ok ? h('div', { className: 'dsh-balance-hero' }, state.result.display) : null,
-							ok && Array.isArray(state.result.windows) && state.result.windows.length > 0
+							hasValue
+								? h(
+										'div',
+										{ className: 'dsh-balance-hero' },
+										value,
+										stale
+											? h('span', { className: 'dsh-balance-winnote' }, ` · ${t('stale')}`)
+											: null,
+									)
+								: null,
+							hasValue && state.result !== null && Array.isArray(state.result.windows) && state.result.windows.length > 0
 								? h(
 										'div',
 										null,

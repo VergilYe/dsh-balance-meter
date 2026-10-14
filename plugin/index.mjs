@@ -347,16 +347,26 @@ export function apply(ctx, config) {
 
     if (input.force === true) {
       for (const route of selected) store.clearCooldown(route.id)
-    } else if (cfg('autoRefresh') === false) {
+    } else if (input.cold !== true && cfg('autoRefresh') === false) {
       return selected.map((route) => store.get(route.id))
     }
 
-    // Sequential on purpose: eight parallel vendor calls on a poll would be
-    // needlessly bursty, and the chip only needs the primary route promptly.
+    // Sequential on purpose: several parallel vendor calls on one poll would be
+    // needlessly bursty, and only the chip's route is needed promptly.
     const results = []
     for (const route of selected) {
-      if (input.force !== true && !store.mayAutoRefresh(route.id, minIntervalMs())) {
-        results.push(store.get(route.id))
+      const state = store.get(route.id)
+      const attempt = input.force === true
+        ? true
+        // A cold read is the one automatic query that is not on a timer: until
+        // a route has been tried once there is nothing to display at all, so a
+        // freshly loaded plugin — or a newly selected model — needs exactly one
+        // query to become useful.
+        : input.cold === true
+          ? state.attemptedAt === null
+          : store.mayAutoRefresh(route.id, minIntervalMs())
+      if (!attempt) {
+        results.push(state)
         continue
       }
       results.push(await queryRoute(route, { timeoutMs: timeoutMs() }))
@@ -553,7 +563,14 @@ export function apply(ctx, config) {
         }, { headers })
       }
 
-      await refresh({ routes: selected, force: wantsRefresh })
+      // Reading the snapshot must not itself become a vendor query. The readout
+      // polls this route every few seconds; letting each poll query the vendor
+      // put the plugin at a continuous request-per-interval rate and turned
+      // every transient blip into a visible failure. A poll is a cache read
+      // plus, for a route that has never been tried, one cold query so the
+      // readout can show something at all. Freshness comes from `turn/end` and
+      // from an explicit `?refresh=1`.
+      await refresh({ routes: selected, force: wantsRefresh === true, cold: wantsRefresh !== true })
 
       const keys = new Set(selected.map((route) => route.id))
       return Response.json({

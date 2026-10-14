@@ -18,12 +18,31 @@ export const STATUS = Object.freeze({
   PENDING: 'pending',
 })
 
-/** Statuses that mean the route is usable but this plugin cannot read a number. */
+/**
+ * Statuses an automatic retry cannot improve on its own.
+ *
+ * `no-credential` is deliberately absent. Resolving a credential is a local
+ * lookup with no network cost, and it can become resolvable without anyone
+ * editing this plugin — a key may be added, or a file-backed source may appear.
+ * Treating it as terminal left a route stuck on that answer until the user
+ * refreshed by hand, which is the failure mode a timer is supposed to spare
+ * them.
+ */
 const TERMINAL_MISSES = new Set([
-  STATUS.NO_CREDENTIAL,
   STATUS.UNKNOWN_PROVIDER,
   STATUS.NO_PUBLIC_ENDPOINT,
 ])
+
+/**
+ * The text to render for a result, or null when it carries none.
+ * @param {object | null} result
+ * @returns {string | null}
+ */
+function displayOf(result) {
+  if (result === null || typeof result !== 'object') return null
+  const display = result.display
+  return typeof display === 'string' && display !== '' ? display : null
+}
 
 /**
  * Create the store.
@@ -186,6 +205,11 @@ export function createStore(options = {}) {
         message: state.message,
         raw: state.raw,
         queriedAt: state.queriedAt,
+        // The text a readout should render, or null when there is nothing to
+        // render. It is deliberately derived from the presence of a *result*
+        // and not from `status`: a failed attempt must not blank a figure that
+        // is still the best thing known. `stale` below carries the doubt.
+        value: displayOf(state.result),
         stale: state.status !== STATUS.OK && state.result !== null,
       }))
     },

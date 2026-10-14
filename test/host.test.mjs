@@ -316,6 +316,61 @@ describe('snapshot route', () => {
     assert.equal(fetchStub.calls.length, 2)
   })
 
+  it('keeps serving the last good figure when a later automatic refresh fails', async () => {
+    // The readout polls this route continuously, so every automatic refresh is
+    // a fresh chance for one transient failure to blank a good reading. It must
+    // not: a figure that is merely old still beats no figure at all.
+    const routes = []
+    const harness = fullContext({ routes })
+    apply(harness.ctx, defaultConfig({ minIntervalSec: 0 }))
+
+    fetchStub = stubGlobalFetch(() => jsonResponse(DEEPSEEK_BODY))
+    const first = await snapshot(routes)
+    assert.equal(first.body.states[0].value, '¥12.34')
+    assert.equal(first.body.states[0].stale, false)
+
+    fetchStub.restore()
+    fetchStub = stubGlobalFetch(() => {
+      throw new Error('ECONNRESET')
+    })
+    // A finished turn is the automatic refresh path.
+    harness.emit('session/event', {}, { type: 'turn/end' })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const second = await snapshot(routes)
+    assert.equal(second.body.states[0].status, 'network-error')
+    assert.equal(second.body.states[0].value, '¥12.34', 'a failed refresh must not blank the figure')
+    assert.equal(second.body.states[0].stale, true)
+    assert.match(second.body.states[0].message, /ECONNRESET/)
+  })
+
+  it('does not query the vendor on a plain poll once the route has been read', async () => {
+    // Polling is several times more frequent than any sensible vendor cadence;
+    // if each poll queried, the plugin would sit at a continuous request rate.
+    fetchStub = stubGlobalFetch(() => jsonResponse(DEEPSEEK_BODY))
+    const routes = []
+    const { ctx } = fullContext({ routes })
+    apply(ctx, defaultConfig({ minIntervalSec: 0 }))
+
+    await snapshot(routes)
+    assert.equal(fetchStub.calls.length, 1, 'the cold read should query once')
+
+    await snapshot(routes)
+    await snapshot(routes)
+    assert.equal(fetchStub.calls.length, 1, 'later polls must stay cache reads')
+  })
+
+  it('does make one cold query so a freshly loaded route can show something', async () => {
+    fetchStub = stubGlobalFetch(() => jsonResponse(DEEPSEEK_BODY))
+    const routes = []
+    const { ctx } = fullContext({ routes })
+    apply(ctx, defaultConfig({ minIntervalSec: 300 }))
+
+    const body = await (await snapshot(routes)).body
+    assert.equal(fetchStub.calls.length, 1)
+    assert.equal(body.states[0].value, '¥12.34')
+  })
+
   it('absorbs a vendor failure into the body rather than returning 5xx', async () => {
     fetchStub = stubGlobalFetch(() => {
       throw new Error('offline')

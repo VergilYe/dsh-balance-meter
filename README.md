@@ -158,8 +158,9 @@ DSH host process                               browser
 **Refresh policy.** The host holds no timer, and nothing guesses when a turn ended.
 
 - **After every turn**, the host listens for the session log's `turn/end` event and refreshes the current route. That event name is not guessed — it was read out of a real `session.v4.jsonl.zstd` (`{"type":"turn/end","data":{"turn":1,"reason":{…}}}`).
-- **The browser half** re-reads the host's **local cache** every 10s (not a vendor request), so a reading the host refreshed appears within 10s; switching the session's model re-reads immediately.
-- Vendor requests themselves are throttled host-side by `minIntervalSec` (default 30s) and the failure cooldown, so a burst of turns cannot become a burst of vendor requests. A hidden page does not poll.
+- **The browser half** reads a snapshot every 10s, and that is a **local cache read that does not touch the vendor**. It queries exactly once in one case: when the route has **never been read** — on plugin load, or right after you switch models. Otherwise a new figure arrives from `turn/end` or your own refresh.
+- Vendor requests are throttled by `minIntervalSec` (default 30s) and the failure cooldown, so a burst of turns cannot become a burst of vendor requests. A hidden page does not poll.
+- **A failed query never blanks the readout.** The host keeps the last successful figure and marks the snapshot `stale`, so the readout keeps showing it labelled *stale* with the reason in the detail panel. Only a route that has never succeeded reads as *Unavailable*.
 
 **Caching.** The endpoint that worked is cached per route; after every candidate fails the route enters a 10-minute cooldown; concurrent queries for one route coalesce into a single in-flight request.
 

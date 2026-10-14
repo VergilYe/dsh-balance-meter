@@ -70,12 +70,23 @@ describe('mayAutoRefresh', () => {
 
   it('never auto-refreshes a route whose answer cannot change on its own', () => {
     const clock = fakeClock()
-    for (const status of [STATUS.NO_CREDENTIAL, STATUS.UNKNOWN_PROVIDER, STATUS.NO_PUBLIC_ENDPOINT]) {
+    for (const status of [STATUS.UNKNOWN_PROVIDER, STATUS.NO_PUBLIC_ENDPOINT]) {
       const store = createStore({ now: clock.now, cooldownMs: 0 })
       store.recordFailure('r', { status, message: 'x' })
       clock.advance(999_999)
       assert.equal(store.mayAutoRefresh('r'), false, `${status} should not auto-refresh`)
     }
+  })
+
+  it('does retry a missing credential, because that can resolve on its own', () => {
+    // A key may be added, or a file-backed credential may appear, without
+    // anyone touching this plugin. Resolving one is a local lookup, so leaving
+    // it stuck until the user refreshes by hand would be a needless dead end.
+    const clock = fakeClock()
+    const store = createStore({ now: clock.now, cooldownMs: 1_000, minIntervalMs: 0 })
+    store.recordFailure('r', { status: STATUS.NO_CREDENTIAL, message: 'x' })
+    clock.advance(1_000)
+    assert.equal(store.mayAutoRefresh('r'), true)
   })
 
   it('still auto-refreshes a transient failure once the cooldown ends', () => {
@@ -191,6 +202,7 @@ describe('snapshot', () => {
       message: null,
       raw: null,
       queriedAt: 1_000_000,
+      value: '¥1.00',
       stale: false,
     })
     assert.ok(!('inflight' in row))
@@ -203,5 +215,37 @@ describe('snapshot', () => {
     clock.advance(1)
     store.recordFailure('r', { status: STATUS.HTTP_ERROR, message: 'boom' })
     assert.equal(store.snapshot()[0].stale, true)
+  })
+
+  it('still offers the last good figure to render after a failed attempt', () => {
+    // The whole point of keeping `result` across a failure is that the reader
+    // keeps seeing the figure. `value` is what the readout renders, so the
+    // decision "is there something to show" belongs here, next to the rule that
+    // keeps the value — not in the browser half, which cannot see the rule.
+    const clock = fakeClock()
+    const store = createStore({ now: clock.now })
+    store.recordSuccess('r', { result: { display: '¥1.00' }, url: 'u' })
+    clock.advance(1)
+    store.recordFailure('r', { status: STATUS.NETWORK_ERROR, message: 'boom' })
+
+    const [row] = store.snapshot()
+    assert.equal(row.status, STATUS.NETWORK_ERROR)
+    assert.equal(row.value, '¥1.00')
+    assert.equal(row.stale, true)
+    assert.equal(row.message, 'boom', 'the reason must still be available alongside the value')
+  })
+
+  it('reports no value when there has never been a successful reading', () => {
+    const store = createStore({ now: fakeClock().now })
+    store.recordFailure('r', { status: STATUS.NETWORK_ERROR, message: 'boom' })
+    const [row] = store.snapshot()
+    assert.equal(row.value, null)
+    assert.equal(row.stale, false)
+  })
+
+  it('reports no value for a result that carries no display text', () => {
+    const store = createStore({ now: fakeClock().now })
+    store.recordSuccess('r', { result: { kind: 'quota' }, url: 'u' })
+    assert.equal(store.snapshot()[0].value, null)
   })
 })
