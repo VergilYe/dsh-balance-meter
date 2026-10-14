@@ -107,6 +107,33 @@ describe('matchRoute', () => {
     assert.equal(match?.entry.id, 'moonshot')
     assert.equal(match?.matchedBy, 'id')
   })
+
+  it('resolves an adapter-suffixed id to the vendor entry', () => {
+    // Adapters name their own routes `deepseek-official`, `deepseek-account`,
+    // and the like. The vendor is plainly known, so treating these as
+    // uncatalogued would be wrong.
+    for (const [id, expected] of [
+      ['deepseek-official', 'deepseek'],
+      ['deepseek-account', 'deepseek'],
+      ['deepseek-api-key', 'deepseek'],
+      ['moonshot-official', 'moonshot'],
+    ]) {
+      const match = matchRoute({ id })
+      assert.equal(match?.entry.id, expected, `${id} did not resolve to ${expected}`)
+      assert.equal(match?.matchedBy, 'id-alias')
+    }
+  })
+
+  it('still reports an unrelated id as uncatalogued', () => {
+    assert.equal(matchRoute({ id: 'deepseek-proxy' }), undefined)
+    assert.equal(matchRoute({ id: 'official' }), undefined)
+  })
+
+  it('matches an aliased id even when the host is unknown', () => {
+    const match = matchRoute({ id: 'deepseek-official', baseURL: 'https://relay.example.com/v1' })
+    assert.equal(match?.entry.id, 'deepseek')
+    assert.equal(match?.matchedBy, 'id-alias')
+  })
 })
 
 describe('candidateURLs', () => {

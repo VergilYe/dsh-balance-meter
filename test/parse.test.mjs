@@ -159,12 +159,35 @@ describe('zhipu', () => {
     assert.match(result.windows[0].note, /方向未标注/)
   })
 
-  it('shows the tightest window on the chip', () => {
+  it('falls back to the binding window when no span is recognisable', () => {
     const result = parseResponse('zhipu', {
       data: { limits: [{ used: 10, limit: 100, name: 'loose' }, { used: 90, limit: 100, name: 'tight' }] },
     })
-    assert.match(result.display, /tight/)
-    assert.match(result.display, /10%/)
+    assert.equal(result.display, 'tight 剩 10%')
+  })
+
+  it('prefers a 5-hour window over a weekly one when both are named', () => {
+    const result = parseResponse('zhipu', {
+      data: {
+        limits: [
+          { used: 10, limit: 100, name: 'weekly' },
+          { used: 90, limit: 100, number: 5 },
+        ],
+      },
+    })
+    assert.equal(result.display, '5 小时窗口 剩 10%')
+  })
+
+  it('prefers a weekly window over a monthly one', () => {
+    const result = parseResponse('zhipu', {
+      data: {
+        limits: [
+          { used: 1, limit: 100, name: 'monthly' },
+          { used: 50, limit: 100, name: 'weekly' },
+        ],
+      },
+    })
+    assert.equal(result.display, 'weekly 剩 50%')
   })
 
   it('refuses a body with no window-shaped object', () => {
@@ -237,16 +260,35 @@ describe('opencodeGo', () => {
     assert.equal(rolling.note, '原始 percent=0')
   })
 
-  it('shows the tightest window on the chip, saying which direction it means', () => {
-    assert.equal(parseResponse('opencodeGo', LIVE).display, '每月 剩 47%')
+  it('shows the shortest-span window, not the one with least left', () => {
+    // rolling is the 5-hour cycle, so it is the window a subscriber manages
+    // against — even though monthly is the one with less remaining.
+    assert.equal(parseResponse('opencodeGo', LIVE).display, '5 小时 剩 100%')
+  })
+
+  it('falls back to the previous window when the shortest one has no figure', () => {
+    const result = parseResponse('opencodeGo', {
+      usage: {
+        rolling: { status: 'ok' },
+        weekly: { percent: 8 },
+      },
+    })
+    assert.equal(result.display, '每周 剩 92%')
+  })
+
+  it('keeps the vendor order in the window list the popover renders', () => {
+    assert.deepEqual(
+      parseResponse('opencodeGo', LIVE).windows.map((w) => w.label),
+      ['5 小时', '每周', '每月'],
+    )
   })
 
   it('carries the reset time through for the UI to format', () => {
     assert.equal(parseResponse('opencodeGo', LIVE).windows[0].resetAt, '2026-10-14T21:46:48.000Z')
   })
 
-  it('labels the rolling window with its approximate span', () => {
-    assert.match(parseResponse('opencodeGo', LIVE).windows[0].label, /滚动/)
+  it('names the rolling window by its span rather than the vendor’s word for it', () => {
+    assert.equal(parseResponse('opencodeGo', LIVE).windows[0].label, '5 小时')
   })
 
   it('clamps a percent outside 0..100', () => {

@@ -162,15 +162,42 @@ function trimTrailing(value) {
 }
 
 /**
- * Match a live route to a catalog entry. An exact provider-id match wins over a
- * host match, because a user may point a vendor's id at a different gateway.
+ * Suffixes an adapter appends to a vendor id to name its own route kind —
+ * `deepseek-official`, `deepseek-account`, `moonshot-api-key`. Stripping them
+ * lets the vendor's own extra routes resolve to its catalogue entry instead of
+ * reporting "not catalogued" when the vendor is plainly known.
+ */
+const ID_SUFFIXES = ['-official', '-account', '-api-key', '-apikey', '-key']
+
+/**
+ * Every id form that should resolve to a catalogue entry, most specific first.
+ * @param {unknown} id
+ * @returns {string[]}
+ */
+function idCandidates(id) {
+  if (typeof id !== 'string' || id === '') return []
+  const forms = [id]
+  for (const suffix of ID_SUFFIXES) {
+    if (id.endsWith(suffix)) forms.push(id.slice(0, -suffix.length))
+  }
+  return forms
+}
+
+/**
+ * Match a live route to a catalog entry.
+ *
+ * An id match — exact, then with an adapter suffix stripped — wins over a host
+ * match, because a user may point a vendor's id at a different gateway.
  * @param {{ id?: string, baseURL?: string }} route
- * @returns {{ entry: CatalogEntry, matchedBy: 'id' | 'host' } | undefined}
+ * @returns {{ entry: CatalogEntry, matchedBy: 'id' | 'id-alias' | 'host' } | undefined}
  */
 export function matchRoute(route) {
   if (route === null || typeof route !== 'object') return undefined
-  const byId = findById(route.id)
-  if (byId !== undefined) return { entry: byId, matchedBy: 'id' }
+  const candidates = idCandidates(route.id)
+  for (const [index, candidate] of candidates.entries()) {
+    const hit = findById(candidate)
+    if (hit !== undefined) return { entry: hit, matchedBy: index === 0 ? 'id' : 'id-alias' }
+  }
   const host = hostOf(route.baseURL)
   if (host === undefined) return undefined
   const byHost = CATALOG.find((entry) => entry.hosts.includes(host))

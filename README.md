@@ -66,9 +66,35 @@ The core promise is **never to guess a number**. Every non-success lands in exac
 | Status | Meaning |
 |---|---|
 | `no-credential` | the credential variable exists but is unset — names the variable to configure |
-| `unknown-provider` | **this plugin has not catalogued the route** — which is *not* the same as the vendor having no endpoint |
+| `unknown-provider` | **this plugin has not catalogued the route** and the preset chain below missed too — which is *not* the same as the vendor having no endpoint |
 | `no-public-endpoint` | catalogued, and that vendor definitively has no public endpoint |
 | `parse-failed` | HTTP 200, but the response shape is unrecognised — **echoes a raw response fragment** |
+
+## Preset endpoint probing
+
+A route outside the built-in catalogue is **not given up on**. A fixed sequence of conventional relay-panel endpoints is tried, and the first that yields a readable figure wins:
+
+| # | Endpoint | Where it comes from |
+|---|---|---|
+| 1 | `GET /api/usage/token/` | New-API ≥ v0.9.0 — remaining quota in one call |
+| 2 | `GET /v1/dashboard/billing/subscription` | OpenAI-style billing, in cents |
+| 3 | `GET /v1/usage` | Sub2API family |
+| 4 | `GET /api/v1/me/quota` | claude-code-hub, which uses an `X-Api-Key` header |
+| 5 | `GET /dashboard/billing/credit_grants` | CloseAI family |
+| 6 | `GET /api/v1/credits` | — |
+| 7 | `GET /api/user/self` | New-API variants |
+
+Presets 1 and 7 first make one **unauthenticated** `GET /api/status` read to pick up the panel's own `quota_per_unit` — a New-API operator can change the accounting unit, and hardcoding 500000 would be off by orders of magnitude.
+
+**An endpoint you set outranks all of them**: the value written by `balance_set_endpoint` or `routes[].endpoint` is tried first, because that is the thing you actually know. If none of the presets fit, setting one is the fix.
+
+A 401 or 403 **stops the chain** — every remaining path would use the same credential.
+
+**Scope of the claim:** the mechanism (order, short-circuit, calibration, fallback) is tested and every extraction path has a fixture, but **the preset shapes themselves are transcribed from the reference project's panel catalogue and could not be re-verified per vendor**. A preset that mismatches therefore reports `parse-failed` and echoes its response, rather than returning a wrong number.
+
+## Id aliases in the catalogue
+
+Adapters name their own routes `deepseek-official`, `deepseek-account` and the like. Those resolve to the vendor's entry once the suffix is stripped, instead of being called uncatalogued — the vendor is plainly known. A genuinely unrelated id (say `deepseek-proxy`) is still reported as uncatalogued.
 
 Echoing the body on `parse-failed` is deliberate: the eight response shapes were compiled from vendor documentation, and **the author holds no keys for these vendors, so none could be verified against a live API during development.** The echo is how you see what actually came back.
 
@@ -77,8 +103,8 @@ Echoed bodies are redacted (`sk-…`, `Bearer …`, `{ "api_key": … }` and sim
 ## Permissions and privacy
 
 - **No `exec` capability, no subprocess.** No shell, no `curl`, no process spawning.
-- **Only the eight vendors' official hosts.** An uncatalogued route does not fall back to "try some likely paths" — it reports `unknown-provider`.
-- **A key only ever goes to its own vendor.** Read through `ctx.credentials.resolve()`, placed in a request header, never written to disk, logs, or the browser snapshot. The snapshot carries the credential *variable name* and no value — there is a test asserting this.
+- **Requests go only to the gateway of the route you configured in DSH.** No third-party domain, no telemetry, no reporting back. A catalogued route is queried at its vendor's official endpoint; an uncatalogued one only ever at its own base URL (see *Preset endpoint probing*).
+- **A key only ever goes to its own gateway.** Read through `ctx.credentials.resolve()`, placed in a request header, never written to disk, logs, or the browser snapshot. The snapshot carries the credential *variable name* and no value — there is a test asserting this.
 - **No other DSH configuration is touched.** `balance_set_endpoint` edits only this plugin's own row `config`.
 
 ## Configuration
@@ -139,9 +165,9 @@ DSH host process                               browser
 
 ## Known differences from the reference implementation
 
-- **No relay-station probing.** The reference carries seven probe chains for uncatalogued gateways. This version queries catalogued domains only — a deliberate trade: requesting unknown domains would void the "official hosts only" guarantee.
 - **Different surface.** The reference sits in the status bar; this one sits on the status row under the composer, which in DSH's slot system is `conversation.composer.dock` — the row the built-in session-stats pills use.
-- **An uncatalogued route is stated, not papered over.** If the session runs on a built-in such as `deepseek-official`, the readout says *Unavailable* and explains that **this plugin has not catalogued it**, rather than inventing a figure.
+- **Which window the readout shows: shortest span first.** 5-hour → weekly → monthly, taking the first that reports a figure. That order is the order in which each window can block you, and a subscription is managed against its nearest cycle. It is deliberately *not* the window with the least remaining, which would sit on the monthly figure permanently. Only when no window's span is recognisable does it fall back to least-remaining.
+- **An uncatalogued route is stated, not papered over.** When the preset chain misses too, the readout says *Unavailable*, explains that **this plugin has not catalogued it**, and carries the last raw response rather than inventing a figure.
 
 ## Which response shapes are verified
 
@@ -161,13 +187,13 @@ If any of the other seven disagrees with its documentation, it reports `parse-fa
 
 ```sh
 npm run verify   # static contract check + the full test suite
-npm test         # 160 tests, no DSH required
+npm test         # 209 tests, no DSH required
 npm run check    # static contract check only
 ```
 
 Tests come in three layers, all runnable **without DSH**:
 
-- **Pure logic** — catalog matching, the eight response parsers, cache/throttle/cooldown/coalescing, route discovery — with an injected clock and fetch, so results are deterministic.
+- **Pure logic** — catalog matching and id aliases, the eight response parsers, the seven-preset probe chain, cache/throttle/cooldown/coalescing, route discovery — with an injected clock and fetch, so results are deterministic.
 - **Host-half integration** — stubs stand in for the `@deepseek-ai/*` packages and the real `apply()` runs, covering tool registration, credential resolution, the snapshot route, and config writes.
 - **Static contract** — `package.json`, `cordis.patch.yml` and the browser half checked for self-consistency: every bare import declared, the bundle patch naming this package, the module id equal to the package name, and `files` shipping both entry points.
 - **Schema guard** (`test/config-schema.test.mjs`) — validates `Config`'s volatile paths against a stub that mirrors the real rule. Mirroring it rather than waving it through matters: a structurally invalid `Config` fails no behavioural test, it just stops the plugin activating in a user's install. `routes[].id` escaped that way once.

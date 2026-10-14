@@ -25,6 +25,7 @@ import { credentialRef, isCredentialRefName } from '@deepseek-ai/dsh-credentials
 
 import { CATALOG } from './catalog.mjs'
 import { runQuery } from './query.mjs'
+import { runPresetQuery } from './presets.mjs'
 import { STATUS, createStore } from './state.mjs'
 import { collectLlmRows, discoverRoutes, pickPrimaryRoute } from './routes.mjs'
 
@@ -247,37 +248,78 @@ export function apply(ctx, config) {
   function queryRoute(route, options = {}) {
     const key = route.id
     return store.coalesce(key, async () => {
+      const { value: apiKey, name: apiKeyEnv } = await resolveKey(route)
+      const budget = options.timeoutMs ?? timeoutMs()
+
+      // A route the catalogue does not know is still worth probing: it may be a
+      // relay panel answering one of the conventional paths. The probe needs a
+      // gateway and a credential; without either there is nothing to try, and
+      // saying which one is missing is more useful than a generic miss.
       if (route.entry === undefined) {
-        store.recordFailure(key, {
-          status: STATUS.UNKNOWN_PROVIDER,
-          message:
-            `本插件未收录路由「${route.id}」。这不代表该供应商没有余额接口，`
-            + '只是它不在本插件的目录里；可在插件配置的 routes 里为它填一条自定义接口。',
-        })
+        if (route.baseURL === null || route.baseURL === '') {
+          saveFailure(key, {
+            status: STATUS.UNKNOWN_PROVIDER,
+            message: `本插件未收录路由「${route.id}」，也没有可用的网关地址，因此无法探测余额接口。`
+              + '可在插件配置的 routes 里为它填 baseURL 与 endpoint。',
+          })
+          return store.get(key)
+        }
+        if (apiKey === null) {
+          saveFailure(key, {
+            status: STATUS.NO_CREDENTIAL,
+            message: apiKeyEnv === null || apiKeyEnv === ''
+              ? `路由「${route.id}」没有可用的凭据变量，无法查询余额。`
+                + '可在插件配置的 routes 里为它指定 apiKeyEnv。'
+              : `未找到凭据 ${apiKeyEnv}。请在 DSH 的凭据设置里配置它。`,
+          })
+          return store.get(key)
+        }
+        saveOutcome(key, await runPresetQuery({
+          baseURL: route.baseURL,
+          endpoint: route.endpoint ?? undefined,
+          apiKey,
+          fetchImpl: fetch,
+          timeoutMs: budget,
+        }))
         return store.get(key)
       }
 
-      const { value: apiKey, name: apiKeyEnv } = await resolveKey(route)
-      const outcome = await runQuery({
+      saveOutcome(key, await runQuery({
         entry: route.entry,
         route: { id: route.id, baseURL: route.baseURL ?? undefined, endpoint: route.endpoint ?? undefined },
         apiKey,
         apiKeyEnv,
         fetchImpl: fetch,
-        timeoutMs: options.timeoutMs ?? timeoutMs(),
-      })
-
-      if (outcome.status === STATUS.OK) {
-        store.recordSuccess(key, { result: outcome.result, url: outcome.url })
-      } else {
-        store.recordFailure(key, {
-          status: outcome.status,
-          message: outcome.message ?? '查询失败。',
-          url: outcome.url,
-          raw: outcome.raw,
-        })
-      }
+        timeoutMs: budget,
+      }))
       return store.get(key)
+    })
+  }
+
+  /**
+   * Fold one query outcome into the store.
+   * @param {string} key
+   * @param {{ status: string, result: object | null, url: string | null, message: string | null, raw: string | null }} outcome
+   */
+  function saveOutcome(key, outcome) {
+    if (outcome.status === STATUS.OK) {
+      store.recordSuccess(key, { result: outcome.result, url: outcome.url })
+      return
+    }
+    saveFailure(key, outcome)
+  }
+
+  /**
+   * Fold a failed outcome into the store.
+   * @param {string} key
+   * @param {{ status: string, url?: string | null, message?: string | null, raw?: string | null }} outcome
+   */
+  function saveFailure(key, outcome) {
+    store.recordFailure(key, {
+      status: outcome.status,
+      message: outcome.message ?? '查询失败。',
+      url: outcome.url ?? null,
+      raw: outcome.raw ?? null,
     })
   }
 

@@ -35,7 +35,7 @@ const CURRENCY_SYMBOLS = { CNY: '¥', RMB: '¥', USD: '$', EUR: '€', GBP: '£'
  * @param {unknown} value
  * @returns {number | null}
  */
-function num(value) {
+export function num(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null
   if (typeof value === 'string' && value.trim() !== '') {
     const parsed = Number(value)
@@ -50,7 +50,7 @@ function num(value) {
  * @param {string} path e.g. `data.total_balance`
  * @returns {unknown}
  */
-function pick(root, path) {
+export function pick(root, path) {
   let node = root
   for (const key of path.split('.')) {
     if (node === null || typeof node !== 'object') return undefined
@@ -65,7 +65,7 @@ function pick(root, path) {
  * @param {string[]} paths
  * @returns {number | null}
  */
-function firstNum(root, paths) {
+export function firstNum(root, paths) {
   for (const path of paths) {
     const value = num(pick(root, path))
     if (value !== null) return value
@@ -79,7 +79,7 @@ function firstNum(root, paths) {
  * @param {string[]} paths
  * @returns {string | null}
  */
-function firstString(root, paths) {
+export function firstString(root, paths) {
   for (const path of paths) {
     const value = pick(root, path)
     if (typeof value === 'string' && value.trim() !== '') return value.trim()
@@ -94,7 +94,7 @@ function firstString(root, paths) {
  * @param {number} [depth]
  * @returns {Record<string, unknown>[]}
  */
-function findObjects(root, predicate, depth = 6) {
+export function findObjects(root, predicate, depth = 6) {
   const found = []
   const seen = new Set()
   /** @param {unknown} node @param {number} level */
@@ -173,8 +173,11 @@ function window_(input) {
 }
 
 /**
- * Build a quota result from normalized windows. The chip shows the tightest
- * window, because that is the one that will run out first.
+ * Build a quota result from normalized windows.
+ *
+ * The readout shows the shortest-span window that actually carries a figure;
+ * `windows` keeps the vendor's own order so the popover lists them as the API
+ * returned them.
  * @param {RawResult['windows']} windows
  * @param {{ label: string, value: string }[]} [detail]
  * @returns {RawResult}
@@ -182,16 +185,22 @@ function window_(input) {
 function quota(windows, detail = []) {
   if (windows.length === 0) throw new ParseError('响应里没有可识别的额度窗口')
   const measurable = windows.filter((w) => w.remainingPct !== null)
-  const tightest = measurable.length
-    ? measurable.reduce((min, w) => (w.remainingPct < min.remainingPct ? w : min))
-    : null
-  // "剩" is spelled out because a bare "每月 47%" is ambiguous about which
+  const ranked = measurable.filter((w) => spanRank(w) < 5)
+  // Shortest recognised span wins. With no recognised span at all there is no
+  // cycle to manage against, so the binding constraint — least remaining — is
+  // the more useful thing to surface than whichever window the API listed first.
+  const focus = ranked.length > 0
+    ? ranked.reduce((best, w) => (spanRank(w) < spanRank(best) ? w : best))
+    : (measurable.length > 0
+        ? measurable.reduce((least, w) => (w.remainingPct < least.remainingPct ? w : least))
+        : null)
+  // "剩" is spelled out because a bare "5 小时 100%" is ambiguous about which
   // direction it measures — and so is any reading derived from a vendor's
   // unlabelled percentage.
   const display =
-    tightest === null
+    focus === null
       ? windows[0].label
-      : `${tightest.label} 剩 ${tightest.remainingPct.toFixed(0)}%`
+      : `${focus.label} 剩 ${focus.remainingPct.toFixed(0)}%`
   return {
     kind: 'quota',
     currency: null,
@@ -466,7 +475,7 @@ const PARSERS = {
  * @param {number} value
  * @returns {number}
  */
-function clampPct(value) {
+export function clampPct(value) {
   return Math.max(0, Math.min(100, value))
 }
 
@@ -476,9 +485,53 @@ function clampPct(value) {
  * @returns {string}
  */
 const WINDOW_LABELS = {
-  rolling: '滚动（约 5 小时）',
+  rolling: '5 小时',
   weekly: '每周',
   monthly: '每月',
+}
+
+/**
+ * Order quota windows by how soon each one can block you: the shortest span
+ * first.
+ *
+ * The readout shows the *near-term* window rather than the one with the least
+ * left, because a subscription is managed against its tightest cycle — knowing
+ * the 5-hour window and the weekly one are both comfortable is more useful than
+ * watching a monthly figure that cannot bind for weeks. Every window is still
+ * listed in the detail popover.
+ *
+ * Matched against a window's key or label, so it works whichever name a vendor
+ * chose. Unrecognised windows sort last rather than competing with named ones.
+ */
+const SPAN_RANKS = [
+  [/(roll|hour|hourly|session|\b5\s*h)/i, 1],
+  [/(daily|\bday\b|\b24\s*h)/i, 2],
+  [/(week|weekly|\b7\s*d)/i, 3],
+  [/(month|monthly|\b30\s*d)/i, 4],
+]
+
+/** Chinese span words, checked separately because they are not word-bounded. */
+const SPAN_RANKS_CJK = [
+  [/滚动|小时/, 1],
+  [/每日|当天/, 2],
+  [/每周|周额度/, 3],
+  [/每月|月额度/, 4],
+]
+
+/**
+ * Rank a window by its span, shortest first.
+ * @param {{ key?: string, label?: string }} window
+ * @returns {number} 1..4 for a recognised span, 5 for an unrecognised one.
+ */
+export function spanRank(window) {
+  const haystack = `${window?.key ?? ''} ${window?.label ?? ''}`
+  for (const [pattern, rank] of SPAN_RANKS) {
+    if (pattern.test(haystack)) return rank
+  }
+  for (const [pattern, rank] of SPAN_RANKS_CJK) {
+    if (pattern.test(haystack)) return rank
+  }
+  return 5
 }
 
 /**

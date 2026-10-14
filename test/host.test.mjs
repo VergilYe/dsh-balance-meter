@@ -199,15 +199,34 @@ describe('balance_check — the four miss levels', () => {
   })
 
   it('unknown-provider says "not catalogued", never "the vendor has no endpoint"', async () => {
+    // Every preset path 404s: the host answers, but as none of the shapes the
+    // plugin knows. That is the state this message is for.
+    fetchStub = stubGlobalFetch(() => new Response('', { status: 404 }))
+    const { ctx, registered } = makeCtx({
+      services: {
+        credentials: { resolve: async () => ({ value: 'sk-relay', source: 'file' }) },
+        llm: { listProviders: () => [] },
+      },
+    })
+    apply(ctx, defaultConfig({
+      routes: [{ id: 'my-relay', baseURL: 'https://relay.example.com', apiKeyEnv: 'RELAY_KEY', endpoint: '' }],
+    }))
+    const out = JSON.parse(await toolNamed(registered, 'balance_check').execute({}))
+
+    assert.equal(out.status, 'unknown-provider')
+    assert.match(out.message, /未收录/)
+    assert.match(out.message, /不代表该供应商没有余额接口/)
+    assert.ok(fetchStub.calls.length > 1, 'the preset chain should have been tried')
+  })
+
+  it('does not send a preset probe without a credential for the route', async () => {
     fetchStub = stubGlobalFetch(() => jsonResponse(DEEPSEEK_BODY))
     const { ctx, registered } = makeCtx({
       services: { llm: { listProviders: () => [{ id: 'my-relay', baseURL: 'https://relay.example.com' }] } },
     })
     apply(ctx, defaultConfig())
     const out = JSON.parse(await toolNamed(registered, 'balance_check').execute({}))
-    assert.equal(out.status, 'unknown-provider')
-    assert.match(out.message, /未收录/)
-    assert.match(out.message, /不代表该供应商没有余额接口/)
+    assert.equal(out.status, 'no-credential')
     assert.equal(fetchStub.calls.length, 0)
   })
 
@@ -351,15 +370,17 @@ describe('snapshot route scoping', () => {
     assert.match(fetchStub.calls[0].url, /deepseek/)
   })
 
-  it('reports an uncatalogued built-in honestly instead of hiding it', async () => {
+  it('resolves an adapter-owned route kind to its vendor, rather than calling it uncatalogued', async () => {
+    // `deepseek-official` is the DeepSeek adapter's own name for its route. The
+    // vendor is plainly known, so this must not report "not catalogued".
     fetchStub = stubGlobalFetch(() => jsonResponse(DEEPSEEK_BODY))
     const { ctx, routes } = snapshotContext([{ id: 'deepseek-official' }])
     apply(ctx, defaultConfig())
     const body = await ask(routes[0], '?route=deepseek-official')
 
     assert.equal(body.primary, 'deepseek-official')
-    assert.equal(body.states[0].status, 'unknown-provider')
-    assert.match(body.states[0].message, /未收录/)
+    assert.equal(body.states[0].status, 'ok')
+    assert.equal(body.routes[0].label, 'DeepSeek')
   })
 
   it('says so when it knows nothing about the route at all', async () => {
@@ -371,10 +392,9 @@ describe('snapshot route scoping', () => {
 
   it('falls back to the primary route when no route is named', async () => {
     fetchStub = stubGlobalFetch(() => jsonResponse(DEEPSEEK_BODY))
-    const { ctx, routes } = snapshotContext([{ id: 'deepseek-official' }, { id: 'deepseek' }])
+    const { ctx, routes } = snapshotContext([{ id: 'deepseek' }, { id: 'moonshot' }])
     apply(ctx, defaultConfig())
     const body = await ask(routes[0], '')
-    // `deepseek-official` is not catalogued, so the catalogued route wins.
     assert.equal(body.primary, 'deepseek')
     assert.deepEqual(body.routes.map((route) => route.id), ['deepseek'])
   })
