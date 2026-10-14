@@ -63,20 +63,35 @@ function read(value) {
     : value
 }
 
+/**
+ * One route override. Deliberately NOT volatile — see `Config` below.
+ */
 const routeOverrideSchema = Schema.object({
-  id: volatileField(Schema.string().default('')),
-  baseURL: volatileField(Schema.string().default('')),
-  apiKeyEnv: volatileField(Schema.string().default('')),
-  endpoint: volatileField(Schema.string().default('')),
+  id: Schema.string().default(''),
+  baseURL: Schema.string().default(''),
+  apiKeyEnv: Schema.string().default(''),
+  endpoint: Schema.string().default(''),
 })
 
 /**
- * User-owned configuration. Every field is volatile so the Plugins-page form
- * can edit it without a restart; nothing here is preset by the plugin author
- * beyond behaviour defaults.
+ * User-owned configuration. Nothing here is preset by the plugin author beyond
+ * behaviour defaults.
+ *
+ * The scalar fields are volatile so the Plugins-page form can edit them in
+ * place. `routes` is deliberately an ordinary field, and that is a hard
+ * constraint rather than a preference: schemastery validates every array
+ * element as "blocked", so a volatile field can never live inside an array —
+ * `routes[].id` as volatile makes the Loader refuse to activate this plugin at
+ * all ("volatile fields require a fixed object path"). Only statically declared
+ * object paths may be volatile, and route ids are user-chosen, so there is no
+ * schema shape that would let route overrides be volatile.
+ *
+ * The consequence: `balance_set_endpoint` writes `routes` through
+ * `configEditor.edit`, which reconciles the row through the Loader's normal
+ * lifecycle instead of updating it in place.
  */
 export const Config = Schema.object({
-  routes: volatileField(Schema.array(routeOverrideSchema).default([])),
+  routes: Schema.array(routeOverrideSchema).default([]),
   primary: volatileField(Schema.string().default('')),
   autoRefresh: volatileField(Schema.boolean().default(true)),
   minIntervalSec: volatileField(Schema.number().default(30)),

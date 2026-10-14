@@ -105,6 +105,8 @@ Endpoint templates accept `{origin}` (the route's scheme and host) and `{base}` 
 
 **`balance_set_endpoint`** — `{ route, endpoint }`, persists a custom endpoint into this profile's `cordis.patch.yml`, applied immediately. An empty `endpoint` clears the override.
 
+> Writing `routes` sends the plugin row through the Loader's normal lifecycle (effectively a reload), so the in-memory cache resets and the readout re-queries on its next poll. That is a schemastery structural limit rather than a choice: array elements are always validated as "blocked", so a volatile field can never appear inside an array — and since route ids are user-chosen, no schema shape would make route overrides volatile (and volatile is what buys an in-place update without a reload).
+
 ## How it works
 
 ```
@@ -148,6 +150,7 @@ Tests come in three layers, all runnable **without DSH**:
 - **Pure logic** — catalog matching, the eight response parsers, cache/throttle/cooldown/coalescing, route discovery — with an injected clock and fetch, so results are deterministic.
 - **Host-half integration** — stubs stand in for the `@deepseek-ai/*` packages and the real `apply()` runs, covering tool registration, credential resolution, the snapshot route, and config writes.
 - **Static contract** — `package.json`, `cordis.patch.yml` and the browser half checked for self-consistency: every bare import declared, the bundle patch naming this package, the module id equal to the package name, and `files` shipping both entry points.
+- **Schema guard** (`test/config-schema.test.mjs`) — validates `Config`'s volatile paths against a stub that mirrors the real rule. Mirroring it rather than waving it through matters: a structurally invalid `Config` fails no behavioural test, it just stops the plugin activating in a user's install. `routes[].id` escaped that way once.
 
 The design spec is at [docs/superpowers/specs/2026-10-14-dsh-balance-meter-design.md](docs/superpowers/specs/2026-10-14-dsh-balance-meter-design.md) (Chinese).
 

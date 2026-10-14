@@ -105,6 +105,8 @@ dsh plugin --profile desktop remove dsh-balance-meter
 
 **`balance_set_endpoint`** —— 参数 `{ route, endpoint }`，把自定义接口写进本 profile 的 `cordis.patch.yml` 并立即生效；`endpoint` 传空字符串则清除覆盖。
 
+> 写入 `routes` 会让该插件行走一遍 Loader 的正常生命周期（同义于重新装载），因此调用后插件的内存缓存会清空、标题栏读数会在下一次轮询时重新查询。这是 schemastery 的结构限制而非选择：它把数组元素一律视为 "blocked"，volatile 字段**不能**出现在数组里，而路由 id 是用户自定义的，所以没有任何 schema 形状能让路由覆盖成为 volatile 字段（volatile 才能原地更新、不重载）。
+
 ## 工作方式
 
 ```
@@ -147,6 +149,7 @@ npm run check    # 只跑静态契约检查
 - **纯逻辑**（目录匹配、8 个响应解析器、缓存/节流/冷却/合并、路由发现）—— 注入时钟与 fetch，结果确定
 - **宿主半集成** —— 用桩替代 `@deepseek-ai/*` 包，跑真实的 `apply()`，覆盖工具注册、凭据解析、快照路由、配置写入
 - **静态契约** —— `package.json` / `cordis.patch.yml` / 浏览器半的自洽性（裸导入是否已声明、bundle patch 是否指向本包、模块 id 是否等于包名、`files` 是否带上了入口文件）
+- **schema 守卫**（`test/config-schema.test.mjs`）—— 用镜像了真实规则的桩校验器检查 `Config` 的 volatile 路径。这条规则必须镜像而不是放过：`Config` 结构违规不会让任何行为测试失败，只在用户安装时让插件整个不激活。`routes[].id` 曾经就是这样漏出去的。
 
 设计规格见 [docs/superpowers/specs/2026-10-14-dsh-balance-meter-design.md](docs/superpowers/specs/2026-10-14-dsh-balance-meter-design.md)。
 
