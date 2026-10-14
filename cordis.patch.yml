@@ -1,0 +1,16 @@
+# dsh-balance-meter bundle layer: register this plugin's Loader row.
+#
+# The row id `balance-meter` is also the settings namespace the plugin's own
+# tools write to (`balance_set_endpoint` edits this row's `config:` block in the
+# active profile's cordis.patch.yml). Do not rename it without updating
+# ENTRY_NS in client/client.js, which keys the Plugins-page configuration form.
+#
+# `config:` stays empty on purpose: every value in it is user-owned (route
+# overrides, custom endpoints, refresh policy) and is filled in through the GUI
+# or by the plugin's own tools, never preset by the plugin author.
+- insert:
+    - id: balance-meter
+      name: dsh-balance-meter
+      config:
+        autoRefresh: true
+        minIntervalSec: 30

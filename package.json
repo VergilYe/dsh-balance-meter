@@ -1,0 +1,67 @@
+{
+  "name": "dsh-balance-meter",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness plugin: identify the provider behind the current route and query its API balance or subscription quota. No subprocesses, no exec permissions, official endpoints only.",
+  "type": "module",
+  "main": "plugin/index.mjs",
+  "exports": {
+    ".": "./plugin/index.mjs",
+    "./client": "./client/client.js"
+  },
+  "files": [
+    "plugin/",
+    "client/",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "balance",
+    "quota",
+    "billing",
+    "gateway",
+    "provider"
+  ],
+  "scripts": {
+    "test": "node --import ./test/harness/register.mjs --test \"test/*.test.mjs\"",
+    "check": "node scripts/check-plugin-contract.mjs",
+    "verify": "npm run check && npm test"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": ">=0.1.6-0",
+    "@deepseek-ai/dsh-credentials": ">=0.1.6-0",
+    "@deepseek-ai/schemastery": "^3.18.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-credentials": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zhujiuyi/dsh-balance-meter.git"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  }
+}
