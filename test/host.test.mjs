@@ -20,6 +20,7 @@ function defaultConfig(overrides = {}) {
     autoRefresh: true,
     minIntervalSec: 0,
     timeoutMs: 8000,
+    failureCooldownSec: 0,
     ...overrides,
   }
 }
@@ -438,11 +439,18 @@ describe('snapshot route scoping', () => {
     assert.equal(body.routes[0].label, 'DeepSeek')
   })
 
-  it('says so when it knows nothing about the route at all', async () => {
+  it('falls back to a real reading, and says so, when the named route is unknown', async () => {
+    // Answering this with an empty payload blanks the display. Showing a
+    // different real reading with an explanation is the more useful answer.
+    fetchStub = stubGlobalFetch(() => jsonResponse(DEEPSEEK_BODY))
     const { ctx, routes } = snapshotContext([{ id: 'deepseek' }])
     apply(ctx, defaultConfig())
     const body = await ask(routes[0], '?route=ghost')
-    assert.match(body.error, /没有关于路由「ghost」的任何信息/)
+
+    assert.equal(body.primary, 'deepseek')
+    assert.equal(body.states[0].value, '¥12.34')
+    assert.match(body.note, /「ghost」不在本插件已知的路由里/)
+    assert.match(body.note, /deepseek/)
   })
 
   it('falls back to the primary route when no route is named', async () => {
@@ -498,6 +506,72 @@ describe('refresh after each turn', () => {
     harness.emit('session/event', {}, { type: 'turn/end' })
     await new Promise((resolve) => setTimeout(resolve, 0))
     assert.equal(fetchStub.calls.length, 1)
+  })
+})
+
+describe('periodic self-heal', () => {
+  it('registers a repeating tick', () => {
+    const harness = fullContext()
+    apply(harness.ctx, defaultConfig())
+    assert.equal(harness.intervals.length, 1, 'the host must keep a timer of its own')
+    assert.ok(harness.intervals[0].delay > 0)
+  })
+
+  it('recovers a route that failed, without anyone clicking refresh', async () => {
+    // This is the property the readout was missing: with `turn/end` as the only
+    // trigger, an idle session stayed blank after a transient failure.
+    fetchStub = stubGlobalFetch(() => {
+      throw new Error('ECONNRESET')
+    })
+    const harness = fullContext()
+    apply(harness.ctx, defaultConfig({ minIntervalSec: 0, failureCooldownSec: 0 }))
+
+    await harness.tickIntervals()
+    assert.equal(fetchStub.calls.length, 1, 'the first tick queries')
+    assert.equal(harness.registered.length, 2, 'and the tools are unaffected')
+
+    // The vendor comes back; a later tick must pick that up on its own.
+    const before = fetchStub.calls.length
+    await harness.tickIntervals()
+    assert.ok(fetchStub.calls.length > before, 'a later tick retries rather than latching')
+    assert.equal(harness.registered.length, 2)
+  })
+
+  it('reports the recovered reading after the tick succeeds', async () => {
+    const routes = []
+    const harness = makeCtx({
+      services: {
+        credentials: { resolve: async () => ({ value: 'sk-x', source: 'file' }) },
+        llm: { listProviders: () => [{ id: 'deepseek' }] },
+        connection: { fetch: { register: (route) => routes.push(route) } },
+      },
+    })
+    fetchStub = stubGlobalFetch(() => {
+      throw new Error('ECONNRESET')
+    })
+    apply(harness.ctx, defaultConfig({ minIntervalSec: 0, failureCooldownSec: 0 }))
+    await harness.tickIntervals()
+
+    // Swap in a working vendor without touching the plugin at all.
+    fetchStub.restore()
+    fetchStub = stubGlobalFetch(() => jsonResponse(DEEPSEEK_BODY))
+    await harness.tickIntervals()
+
+    const response = await routes[0].fetch(new Request(`http://localhost${SNAPSHOT_PATH}?route=deepseek`))
+    const body = await response.json()
+    assert.equal(body.states[0].status, 'ok')
+    assert.equal(body.states[0].value, '¥12.34')
+  })
+
+  it('does not turn every tick into a vendor request', async () => {
+    fetchStub = stubGlobalFetch(() => jsonResponse(DEEPSEEK_BODY))
+    const harness = fullContext()
+    apply(harness.ctx, defaultConfig({ minIntervalSec: 900 }))
+
+    await harness.tickIntervals()
+    await harness.tickIntervals()
+    await harness.tickIntervals()
+    assert.equal(fetchStub.calls.length, 1, 'the configured floor still governs')
   })
 })
 

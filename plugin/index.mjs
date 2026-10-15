@@ -41,6 +41,15 @@ export const SNAPSHOT_PATH = '/api/balance-meter/snapshot'
 export const ENTRY_NS = 'balance-meter'
 
 /**
+ * How often the host wakes to consider a refresh.
+ *
+ * This is a tick, not the refresh rate: `minIntervalSec` and the failure
+ * cooldown decide whether a tick becomes a vendor request. Sampling faster than
+ * the setting is what lets a changed setting apply without reloading the row.
+ */
+export const SELF_HEAL_TICK_MS = 15_000
+
+/**
  * Mark a schema field volatile so the Plugins-page form can edit it live.
  *
  * On DSH >= 0.2 a volatile field resolves to a frozen `{ get() }` reference
@@ -97,6 +106,7 @@ export const Config = Schema.object({
   autoRefresh: volatileField(Schema.boolean().default(true)),
   minIntervalSec: volatileField(Schema.number().default(30)),
   timeoutMs: volatileField(Schema.number().default(8000)),
+  failureCooldownSec: volatileField(Schema.number().default(600)),
 })
 
 /**
@@ -109,6 +119,9 @@ export function apply(ctx, config) {
 
   const store = createStore({
     minIntervalMs: secondsToMs(read(config.minIntervalSec), 30),
+    // Only a ceiling: a route with no reading backs off toward this value
+    // rather than starting at it, so a blank readout recovers in seconds.
+    cooldownMs: secondsToMs(read(config.failureCooldownSec), 600),
   })
 
   /** Services that may be absent, populated by the optional injections below. */
@@ -550,30 +563,28 @@ export function apply(ctx, config) {
     const headers = { 'cache-control': 'no-store', 'content-type': 'application/json' }
     try {
       const list = knownRoutes()
-      const selected = wanted === ''
+      const requested = list.filter((route) => route.id === wanted)
+      // A caller naming a route this plugin does not know — a session model the
+      // router reports under an id discovery does not produce — must not be
+      // answered with an empty payload. Empty states read as "no reading" and
+      // blank the display, which is worse than showing a different, real reading
+      // and saying so. The readout's job is to be useful, not to be literal.
+      const substituted = wanted !== '' && requested.length === 0
+      const selected = wanted === '' || substituted
         ? [pickPrimaryRoute(list, textOf(cfg('primary')))].filter((route) => route !== null)
-        : list.filter((route) => route.id === wanted)
-
-      if (wanted !== '' && selected.length === 0) {
-        return Response.json({
-          primary: wanted,
-          routes: [],
-          states: [],
-          error: `本插件没有关于路由「${wanted}」的任何信息。`,
-        }, { headers })
-      }
+        : requested
 
       // Reading the snapshot must not itself become a vendor query. The readout
       // polls this route every few seconds; letting each poll query the vendor
       // put the plugin at a continuous request-per-interval rate and turned
       // every transient blip into a visible failure. A poll is a cache read
       // plus, for a route that has never been tried, one cold query so the
-      // readout can show something at all. Freshness comes from `turn/end` and
-      // from an explicit `?refresh=1`.
+      // readout can show something at all. Freshness comes from the periodic
+      // tick, `turn/end`, and an explicit `?refresh=1`.
       await refresh({ routes: selected, force: wantsRefresh === true, cold: wantsRefresh !== true })
 
       const keys = new Set(selected.map((route) => route.id))
-      return Response.json({
+      const payload = {
         primary: selected.length === 0 ? null : selected[0].id,
         routes: selected.map((route) => describeRoute(route)),
         states: store.snapshot().filter((state) => keys.has(state.key)),
@@ -581,7 +592,13 @@ export function apply(ctx, config) {
         minIntervalSec: Math.round(minIntervalMs() / 1000),
         catalogSize: CATALOG.length,
         known: list.length,
-      }, { headers })
+      }
+      if (substituted) {
+        payload.note = selected.length === 0
+          ? `会话模型指向的路由「${wanted}」不在本插件已知的路由里，且没有可替代的路由。`
+          : `会话模型指向的路由「${wanted}」不在本插件已知的路由里，这里显示的是「${selected[0].id}」。`
+      }
+      return Response.json(payload, { headers })
     } catch (error) {
       return Response.json({
         primary: wanted === '' ? null : wanted,
@@ -591,6 +608,26 @@ export function apply(ctx, config) {
       }, { headers })
     }
   }
+
+  // ── periodic self-heal ───────────────────────────────────────────────────
+  // Without this the readout could not recover from anything on its own: the
+  // only other automatic trigger is `turn/end`, so an idle session — or a store
+  // that lost its reading when the row reloaded — stayed blank until the user
+  // clicked. The tick is deliberately faster than the configured floor and does
+  // no work of its own: `mayAutoRefresh` still enforces `minIntervalSec` and the
+  // failure cooldown, so raising the setting takes effect without a reload.
+  ctx.inject(['timer'], (cctx) => {
+    try {
+      cctx.effect(
+        () => cctx.interval(() => {
+          void refreshPrimary(false).catch(() => {})
+        }, SELF_HEAL_TICK_MS),
+        'balance-meter: periodic refresh',
+      )
+    } catch (error) {
+      warn(ctx, `periodic refresh skipped: ${errorMessage(error)}`)
+    }
+  })
 
   // ── refresh after each turn ──────────────────────────────────────────────
   // `turn/end` is the session-log event a completed turn writes; the shape was

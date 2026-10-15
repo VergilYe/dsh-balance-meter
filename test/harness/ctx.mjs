@@ -17,8 +17,16 @@ export function makeCtx(options = {}) {
   const services = options.services ?? {}
   const registered = []
   const effects = []
+  /** Repeating callbacks registered through the timer service. */
+  const intervals = []
   /** @type {Map<string, Function[]>} */
   const listeners = new Map()
+
+  // The timer plugin adds `ctx.interval` to the context itself rather than
+  // exposing a single call site, so the stub mirrors that: the method lives on
+  // the context and `timer` only needs to be present for `inject` to fire.
+  const timerService = { interval(callback, delay) { return { callback, delay } } }
+  if (!('timer' in services)) services.timer = timerService
 
   const ctx = {
     tools: {
@@ -62,6 +70,19 @@ export function makeCtx(options = {}) {
       }
     },
     /**
+     * Register a repeating callback, as the timer plugin's `ctx.interval` does.
+     * @param {Function} callback
+     * @param {number} delay
+     */
+    interval(callback, delay) {
+      const handle = { callback, delay }
+      intervals.push(handle)
+      return () => {
+        const index = intervals.indexOf(handle)
+        if (index >= 0) intervals.splice(index, 1)
+      }
+    },
+    /**
      * Subscribe to a cordis event, as the real context does.
      * @param {string} event
      * @param {Function} listener
@@ -91,6 +112,18 @@ export function makeCtx(options = {}) {
         listener(...args)
       }
     },
+    /**
+     * Run every registered repeating callback once, as a timer tick would.
+     * @returns {Promise<void>} resolved once the tick's work has settled.
+     */
+    async tickIntervals() {
+      for (const handle of [...intervals]) handle.callback()
+      // Let the tick's async work run; two drains settle a promise chain.
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    },
+    /** The intervals the plugin registered, for asserting on cadence. */
+    intervals,
     /** Tear everything down, as unloading the plugin row would. */
     restore() {
       for (const row of [...effects].reverse()) {
@@ -98,6 +131,7 @@ export function makeCtx(options = {}) {
       }
       effects.length = 0
       listeners.clear()
+      intervals.length = 0
     },
   }
 }

@@ -452,6 +452,9 @@ window.__ModuleLoader__.load({
 										state.message,
 									)
 								: null,
+							snapshot !== null && typeof snapshot.note === 'string'
+								? h('p', { className: 'dsh-balance-msg' }, snapshot.note)
+								: null,
 							snapshot !== null && snapshot.error !== undefined
 								? h('p', { className: 'dsh-balance-msg', 'data-error': 'true' }, snapshot.error)
 								: null,

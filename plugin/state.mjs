@@ -19,19 +19,13 @@ export const STATUS = Object.freeze({
 })
 
 /**
- * Statuses an automatic retry cannot improve on its own.
+ * First retry delay when a route has no reading at all to fall back on.
  *
- * `no-credential` is deliberately absent. Resolving a credential is a local
- * lookup with no network cost, and it can become resolvable without anyone
- * editing this plugin — a key may be added, or a file-backed source may appear.
- * Treating it as terminal left a route stuck on that answer until the user
- * refreshed by hand, which is the failure mode a timer is supposed to spare
- * them.
+ * Doubles per consecutive failure and is capped at the configured cooldown, so
+ * a transient miss recovers in seconds while a route that is genuinely
+ * unreachable costs no more than the full cooldown would have.
  */
-const TERMINAL_MISSES = new Set([
-  STATUS.UNKNOWN_PROVIDER,
-  STATUS.NO_PUBLIC_ENDPOINT,
-])
+export const EMPTY_RETRY_MS = 15_000
 
 /**
  * The text to render for a result, or null when it carries none.
@@ -88,6 +82,8 @@ export function createStore(options = {}) {
         queriedAt: null,
         attemptedAt: null,
         cooldownUntil: 0,
+        /** Consecutive failures with no reading to fall back on; drives the backoff. */
+        failures: 0,
         inflight: null,
       }
       routes.set(key, state)
@@ -109,9 +105,12 @@ export function createStore(options = {}) {
       if (at < state.cooldownUntil) return false
       const interval = Number.isFinite(minIntervalMs) ? minIntervalMs : defaultMinIntervalMs
       if (state.attemptedAt !== null && at - state.attemptedAt < interval) return false
-      // A route whose answer cannot change without user action (no credential,
-      // not catalogued, no public endpoint) is not worth re-asking on a timer.
-      if (TERMINAL_MISSES.has(state.status)) return false
+      // Every status stays retryable. Carving out "answers that cannot change on
+      // their own" looked like a saving and was actually a trap: a miss recorded
+      // from a transient condition — a provider list read at the wrong moment, a
+      // route key that briefly disagreed with the session's — latched forever,
+      // leaving the readout dead until the user clicked. The cooldown below is
+      // what keeps retries cheap, and it is enough.
       return true
     },
 
@@ -150,10 +149,25 @@ export function createStore(options = {}) {
       state.queriedAt = now()
       state.attemptedAt = state.queriedAt
       state.cooldownUntil = 0
+      state.failures = 0
     },
 
     /**
      * Record a failed query and start the cooldown.
+     *
+     * How long that cooldown lasts depends on whether there is anything to show:
+     *
+     *   - With a previous reading, the readout still displays it, so waiting the
+     *     full cooldown is simply being polite to the vendor.
+     *   - With *no* reading, the cooldown is all the user experiences — a blank
+     *     readout with no way back short of clicking. So it retries soon, and
+     *     backs off exponentially from there, which keeps a genuinely broken
+     *     route cheap while letting a transient one recover in seconds.
+     *
+     * `result` is deliberately left as-is either way: a failure keeps the last
+     * good figure, and `snapshot()` marks it stale so the UI can say the number
+     * is old without pretending it is current.
+     *
      * @param {string} key
      * @param {{ status: string, message: string, url?: string | null, raw?: string | null }} input
      */
@@ -163,11 +177,11 @@ export function createStore(options = {}) {
       state.message = input.message
       state.raw = input.raw ?? null
       state.url = input.url ?? state.url
+      state.failures += 1
       state.attemptedAt = now()
-      state.cooldownUntil = now() + cooldownMs
-      // `result` is deliberately left as-is: a transient failure keeps the last
-      // good reading visible, and `snapshot()` marks it stale so the UI can say
-      // the number is old without pretending it is current.
+      state.cooldownUntil = now() + (state.result !== null
+        ? cooldownMs
+        : Math.min(cooldownMs, EMPTY_RETRY_MS * 2 ** (state.failures - 1)))
     },
 
     /**

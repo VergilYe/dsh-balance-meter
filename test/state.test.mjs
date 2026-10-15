@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { STATUS, createStore } from '../plugin/state.mjs'
+import { EMPTY_RETRY_MS, STATUS, createStore } from '../plugin/state.mjs'
 
 /** A clock the test drives by hand. */
 function fakeClock(start = 1_000_000) {
@@ -57,9 +57,11 @@ describe('mayAutoRefresh', () => {
     assert.equal(store.mayAutoRefresh('r'), true)
   })
 
-  it('blocks during the cooldown after a failure', () => {
+  it('waits the full cooldown after a failure when a reading is already showing', () => {
+    // There is something to look at, so waiting is only being polite.
     const clock = fakeClock()
     const store = createStore({ now: clock.now, cooldownMs: 600_000 })
+    store.recordSuccess('r', { result: { display: '¥1.00' }, url: 'u' })
     store.recordFailure('r', { status: STATUS.NETWORK_ERROR, message: 'boom' })
     assert.equal(store.mayAutoRefresh('r'), false)
     clock.advance(599_999)
@@ -68,25 +70,58 @@ describe('mayAutoRefresh', () => {
     assert.equal(store.mayAutoRefresh('r'), true)
   })
 
-  it('never auto-refreshes a route whose answer cannot change on its own', () => {
+  it('retries quickly when there is nothing to show, and backs off from there', () => {
+    // With no reading, the cooldown is all the user experiences: a blank
+    // readout. So a transient miss must recover in seconds, while repeating
+    // failures still grow toward the ceiling.
     const clock = fakeClock()
-    for (const status of [STATUS.UNKNOWN_PROVIDER, STATUS.NO_PUBLIC_ENDPOINT]) {
-      const store = createStore({ now: clock.now, cooldownMs: 0 })
-      store.recordFailure('r', { status, message: 'x' })
-      clock.advance(999_999)
-      assert.equal(store.mayAutoRefresh('r'), false, `${status} should not auto-refresh`)
-    }
+    const store = createStore({ now: clock.now, cooldownMs: 600_000, minIntervalMs: 0 })
+
+    store.recordFailure('r', { status: STATUS.NETWORK_ERROR, message: 'boom' })
+    clock.advance(EMPTY_RETRY_MS - 1)
+    assert.equal(store.mayAutoRefresh('r'), false)
+    clock.advance(1)
+    assert.equal(store.mayAutoRefresh('r'), true)
+
+    store.recordFailure('r', { status: STATUS.NETWORK_ERROR, message: 'boom' })
+    clock.advance(EMPTY_RETRY_MS * 2 - 1)
+    assert.equal(store.mayAutoRefresh('r'), false, 'the second wait doubles')
+    clock.advance(1)
+    assert.equal(store.mayAutoRefresh('r'), true)
   })
 
-  it('does retry a missing credential, because that can resolve on its own', () => {
-    // A key may be added, or a file-backed credential may appear, without
-    // anyone touching this plugin. Resolving one is a local lookup, so leaving
-    // it stuck until the user refreshes by hand would be a needless dead end.
+  it('caps the backoff at the configured cooldown', () => {
     const clock = fakeClock()
-    const store = createStore({ now: clock.now, cooldownMs: 1_000, minIntervalMs: 0 })
-    store.recordFailure('r', { status: STATUS.NO_CREDENTIAL, message: 'x' })
-    clock.advance(1_000)
+    const store = createStore({ now: clock.now, cooldownMs: 60_000, minIntervalMs: 0 })
+    for (let i = 0; i < 12; i += 1) {
+      store.recordFailure('r', { status: STATUS.NETWORK_ERROR, message: 'boom' })
+    }
+    clock.advance(60_000 - 1)
+    assert.equal(store.mayAutoRefresh('r'), false)
+    clock.advance(1)
     assert.equal(store.mayAutoRefresh('r'), true)
+  })
+
+  it('resets the backoff once a reading arrives', () => {
+    const clock = fakeClock()
+    const store = createStore({ now: clock.now, cooldownMs: 600_000, minIntervalMs: 0 })
+    store.recordFailure('r', { status: STATUS.NETWORK_ERROR, message: 'boom' })
+    store.recordFailure('r', { status: STATUS.NETWORK_ERROR, message: 'boom' })
+    store.recordSuccess('r', { result: { display: '¥1.00' }, url: 'u' })
+    assert.equal(store.get('r').failures, 0)
+  })
+
+  it('keeps every failure status retryable, because a miss can be transient', () => {
+    // Carving out "answers that cannot change on their own" latched a miss
+    // forever when it came from a transient condition, leaving the readout dead
+    // until the user clicked. Nothing may latch.
+    const clock = fakeClock()
+    for (const status of Object.values(STATUS)) {
+      const store = createStore({ now: clock.now, cooldownMs: 1_000, minIntervalMs: 0 })
+      store.recordFailure('r', { status, message: 'x' })
+      clock.advance(1_000)
+      assert.equal(store.mayAutoRefresh('r'), true, `${status} must remain retryable`)
+    }
   })
 
   it('still auto-refreshes a transient failure once the cooldown ends', () => {
