@@ -52,6 +52,14 @@
     "type": "git",
     "url": "https://github.com/zhujiuyi/dsh-balance-meter.git"
   },
+  "homepage": "https://github.com/zhujiuyi/dsh-balance-meter#readme",
+  "bugs": {
+    "url": "https://github.com/zhujiuyi/dsh-balance-meter/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
