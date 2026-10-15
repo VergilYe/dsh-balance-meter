@@ -16,10 +16,10 @@ DeepSeek Harness（DSH）原生插件：**按当前路由识别供应商与计�
 
 ## 安装
 
-npm 包名是 **`@dsh/dsh-balance`**。从 Release 的 tarball 安装：
+npm 包名是 **`@zhujiuyi/dsh-balance`**。从 Release 的 tarball 安装：
 
 ```sh
-dsh plugin --profile desktop add https://github.com/zhujiuyi/dsh-balance-meter/releases/latest/download/dsh-dsh-balance-0.1.0.tgz
+dsh plugin --profile desktop add https://github.com/zhujiuyi/dsh-balance-meter/releases/latest/download/zhujiuyi-dsh-balance-0.1.0.tgz
 ```
 
 或直接从仓库装：
@@ -31,14 +31,14 @@ dsh plugin --profile desktop add github:zhujiuyi/dsh-balance-meter
 > **不要执行 `dsh plugin add dsh-balance-meter`。** 那个不带作用域的名字在 npm 上属于
 > 另一个无关的包，这条命令会装到那一个去。
 
-装完重启 DSH，插件页会出现 `@dsh/dsh-balance` 卡片，读数出现在输入框下方的状态行。
+装完重启 DSH，插件页会出现 `@zhujiuyi/dsh-balance` 卡片，读数出现在输入框下方的状态行。
 
 装完再改代码，重跑同一条命令即可覆盖（同一包名），不需要先卸载。
 
 卸载：
 
 ```sh
-dsh plugin --profile desktop remove @dsh/dsh-balance
+dsh plugin --profile desktop remove @zhujiuyi/dsh-balance
 ```
 
 ## 它显示什么
@@ -120,13 +120,13 @@ dsh plugin --profile desktop remove @dsh/dsh-balance
 
 ## 配置
 
-插件页 → `@dsh/dsh-balance` 卡片 → 配置表单：优先显示的路由、是否自动刷新、最小刷新间隔。
+插件页 → `@zhujiuyi/dsh-balance` 卡片 → 配置表单：优先显示的路由、是否自动刷新、最小刷新间隔。
 
 `routes[]` 覆盖（自定义接口、改凭据变量名）通过工具或直接编辑 profile 的 `cordis.patch.yml` 中 `balance-meter` 那一行：
 
 ```yaml
 - id: balance-meter
-  name: "@dsh/dsh-balance"
+  name: "@zhujiuyi/dsh-balance"
   config:
     primary: deepseek
     routes:
@@ -151,7 +151,7 @@ dsh plugin --profile desktop remove @dsh/dsh-balance
 ```
 DSH 宿主进程                                  浏览器
 ┌────────────────────────────────────┐       ┌────────────────────┐
-│ @dsh/dsh-balance（宿主半）         │       │ @dsh/dsh-balance  │
+│ @zhujiuyi/dsh-balance（宿主半）         │       │ @zhujiuyi/dsh-balance  │
 │                                    │       │ （浏览器半）        │
 │ ctx.llm.listProviders()  ─┐        │       │                    │
 │ configEditor 的 llm-* 行  ─┼→ 路由  │       │  标题栏读数         │

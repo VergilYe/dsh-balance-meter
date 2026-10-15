@@ -16,10 +16,10 @@ This is the DSH counterpart of [ccgui-plugin-balance-meter](https://github.com/z
 
 ## Install
 
-The npm package is **`@dsh/dsh-balance`**. Install it from the release tarball:
+The npm package is **`@zhujiuyi/dsh-balance`**. Install it from the release tarball:
 
 ```sh
-dsh plugin --profile desktop add https://github.com/zhujiuyi/dsh-balance-meter/releases/latest/download/dsh-dsh-balance-0.1.0.tgz
+dsh plugin --profile desktop add https://github.com/zhujiuyi/dsh-balance-meter/releases/latest/download/zhujiuyi-dsh-balance-0.1.0.tgz
 ```
 
 Or straight from the repository:
@@ -31,14 +31,14 @@ dsh plugin --profile desktop add github:zhujiuyi/dsh-balance-meter
 > **Do not run `dsh plugin add dsh-balance-meter`.** That unscoped name belongs to an
 > unrelated package on npm, and the command would install that one instead.
 
-Restart DSH. A `@dsh/dsh-balance` card appears on the Plugins page and the readout appears on the composer status row.
+Restart DSH. A `@zhujiuyi/dsh-balance` card appears on the Plugins page and the readout appears on the composer status row.
 
 After editing the source, run the same command again to overwrite it (same package name) — no uninstall first.
 
 Uninstall:
 
 ```sh
-dsh plugin --profile desktop remove @dsh/dsh-balance
+dsh plugin --profile desktop remove @zhujiuyi/dsh-balance
 ```
 
 ## What it shows
@@ -120,13 +120,13 @@ Echoed bodies are redacted (`sk-…`, `Bearer …`, `{ "api_key": … }` and sim
 
 ## Configuration
 
-Plugins page → the `@dsh/dsh-balance` card → the form edits the primary route, the auto-refresh switch, and the minimum interval.
+Plugins page → the `@zhujiuyi/dsh-balance` card → the form edits the primary route, the auto-refresh switch, and the minimum interval.
 
 Route overrides (custom endpoints, different credential variables) go through the tool, or by editing the `balance-meter` row in the profile's `cordis.patch.yml`:
 
 ```yaml
 - id: balance-meter
-  name: "@dsh/dsh-balance"
+  name: "@zhujiuyi/dsh-balance"
   config:
     primary: deepseek
     routes:
@@ -151,7 +151,7 @@ Endpoint templates accept `{origin}` (the route's scheme and host) and `{base}` 
 ```
 DSH host process                               browser
 ┌────────────────────────────────────┐       ┌────────────────────┐
-│ @dsh/dsh-balance (host half)      │       │ @dsh/dsh-balance  │
+│ @zhujiuyi/dsh-balance (host half)      │       │ @zhujiuyi/dsh-balance  │
 │                                    │       │ (browser half)     │
 │ ctx.llm.listProviders()  ─┐        │       │                    │
 │ llm-* rows via             ├→ routes│       │  header readout    │

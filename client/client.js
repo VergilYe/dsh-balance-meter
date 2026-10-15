@@ -1,5 +1,5 @@
 /**
- * @dsh/dsh-balance — browser half (DSH web client).
+ * @zhujiuyi/dsh-balance — browser half (DSH web client).
  *
  * Loaded as a classic script through `window.__ModuleLoader__.load()`, exactly
  * like every other client bundle. Conventions this file must keep:
@@ -26,7 +26,7 @@
  */
 
 window.__ModuleLoader__.load({
-	id: '@dsh/dsh-balance',
+	id: '@zhujiuyi/dsh-balance',
 	factory(require) {
 		const React = require('react')
 		const h = React.createElement
@@ -781,7 +781,7 @@ window.__ModuleLoader__.load({
 				ctx.effect(() => ctx.locale.register(LOCALE_NS, { zh, en }), 'balance-meter: dictionaries')
 				ctx.effect(() => {
 					const style = document.createElement('style')
-					style.setAttribute('data-plugin', '@dsh/dsh-balance')
+					style.setAttribute('data-plugin', '@zhujiuyi/dsh-balance')
 					style.textContent = CSS
 					document.head.appendChild(style)
 					return () => {
@@ -805,7 +805,7 @@ window.__ModuleLoader__.load({
 				ctx.inject(['configForms'], (forms) => {
 					const scope = forms.configForms.get(ENTRY_NS)
 					ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register(
-						{ name: 'plugins.bundle.config', key: '@dsh/dsh-balance', locale: LOCALE_NS },
+						{ name: 'plugins.bundle.config', key: '@zhujiuyi/dsh-balance', locale: LOCALE_NS },
 						configFormFor(scope),
 					))
 				})
