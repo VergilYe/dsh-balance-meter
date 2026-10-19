@@ -603,6 +603,12 @@ export function apply(ctx, config) {
         primary: selected.length === 0 ? null : selected[0].id,
         routes: selected.map((route) => describeRoute(route)),
         states: store.snapshot().filter((state) => keys.has(state.key)),
+        // Readings that actually happened, per route and window, for the trend
+        // chart. Empty means "no readings yet", which the chart must show as
+        // such — the mock's invented series is exactly what this avoids.
+        history: Object.fromEntries(
+          selected.map((route) => [route.id, store.history(route.id)]),
+        ),
         autoRefresh: cfg('autoRefresh') !== false,
         minIntervalSec: Math.round(minIntervalMs() / 1000),
         catalogSize: CATALOG.length,

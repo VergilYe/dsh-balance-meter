@@ -28,6 +28,16 @@ export const STATUS = Object.freeze({
 export const EMPTY_RETRY_MS = 15_000
 
 /**
+ * How many readings of one window are kept for the trend chart.
+ *
+ * A trend line is a claim about the past, so it must be built from readings that
+ * actually happened. The design mock ships a hardcoded series; this plugin keeps
+ * the real thing instead, bounded so a long-lived process cannot grow without
+ * limit. At the 30s floor a full ring is ~40 minutes of history.
+ */
+export const HISTORY_POINTS = 80
+
+/**
  * The text to render for a result, or null when it carries none.
  * @param {object | null} result
  * @returns {string | null}
@@ -36,6 +46,29 @@ function displayOf(result) {
   if (result === null || typeof result !== 'object') return null
   const display = result.display
   return typeof display === 'string' && display !== '' ? display : null
+}
+
+/**
+ * Extract the share of each quota window from a parse result.
+ *
+ * Only windows that reported a real remaining percentage contribute: a window
+ * whose pair was unreadable has nothing to plot, and interpolating one would be
+ * exactly the invention this plugin refuses.
+ * @param {object | null} result
+ * @returns {{key: string, pct: number}[]}
+ */
+function shareOf(result) {
+  if (result === null || typeof result !== 'object') return []
+  const windows = Array.isArray(result.windows) ? result.windows : []
+  const out = []
+  for (const window of windows) {
+    if (window === null || typeof window !== 'object') continue
+    const pct = window.remainingPct
+    if (typeof pct !== 'number' || !Number.isFinite(pct)) continue
+    const key = typeof window.key === 'string' && window.key !== '' ? window.key : 'w'
+    out.push({ key, pct })
+  }
+  return out
 }
 
 /**
@@ -49,6 +82,12 @@ export function createStore(options = {}) {
 
   /** @type {Map<string, RouteState>} */
   const routes = new Map()
+
+  /**
+   * Per-window reading history, newest last. Keyed `<routeId>\u0000<windowKey>`.
+   * @type {Map<string, {at: number, pct: number}[]>}
+   */
+  const history = new Map()
 
   /**
    * @typedef {object} RouteState
@@ -150,6 +189,17 @@ export function createStore(options = {}) {
       state.attemptedAt = state.queriedAt
       state.cooldownUntil = 0
       state.failures = 0
+
+      // Keep one sample per window per success. Sampling happens on the reading,
+      // not on the poll, so a cached snapshot read cannot flatten the line into
+      // repeated identical points.
+      for (const { key: windowKey, pct } of shareOf(input.result)) {
+        const seriesKey = `${key}\u0000${windowKey}`
+        const series = history.get(seriesKey) ?? []
+        series.push({ at: state.queriedAt, pct })
+        if (series.length > HISTORY_POINTS) series.splice(0, series.length - HISTORY_POINTS)
+        history.set(seriesKey, series)
+      }
     },
 
     /**
@@ -201,6 +251,27 @@ export function createStore(options = {}) {
      */
     get(key) {
       return ensure(key)
+    },
+
+    /**
+     * Read the retained reading history for one route.
+     *
+     * Returned per window, oldest first, so the browser half can draw a trend
+     * from readings that really happened. An empty array is a real answer — a
+     * freshly loaded plugin has no history yet — and the chart must show that
+     * rather than invent a curve.
+     * @param {string} key
+     * @returns {{key: string, points: {at: number, pct: number}[]}[]}
+     */
+    history(key) {
+      const prefix = `${key}\u0000`
+      const out = []
+      for (const [seriesKey, points] of history) {
+        if (!seriesKey.startsWith(prefix)) continue
+        if (points.length === 0) continue
+        out.push({ key: seriesKey.slice(prefix.length), points: [...points] })
+      }
+      return out
     },
 
     /**

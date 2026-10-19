@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { EMPTY_RETRY_MS, STATUS, createStore } from '../plugin/state.mjs'
+import { EMPTY_RETRY_MS, HISTORY_POINTS, STATUS, createStore } from '../plugin/state.mjs'
 
 /** A clock the test drives by hand. */
 function fakeClock(start = 1_000_000) {
@@ -282,5 +282,105 @@ describe('snapshot', () => {
     const store = createStore({ now: fakeClock().now })
     store.recordSuccess('r', { result: { kind: 'quota' }, url: 'u' })
     assert.equal(store.snapshot()[0].value, null)
+  })
+})
+
+describe('history', () => {
+  /** A quota result carrying the given window shares. */
+  function quota(...pcts) {
+    return {
+      kind: 'quota',
+      display: `${pcts[0]}%`,
+      amount: null,
+      detail: [],
+      windows: pcts.map((pct, index) => ({
+        key: `w${index}`,
+        label: `窗口 ${index + 1}`,
+        used: null,
+        limit: null,
+        remainingPct: pct,
+      })),
+    }
+  }
+
+  it('starts empty, because no reading has happened yet', () => {
+    const store = createStore({ now: fakeClock().now })
+    assert.deepEqual(store.history('r'), [])
+  })
+
+  it('keeps one sample per window per successful reading', () => {
+    const clock = fakeClock()
+    const store = createStore({ now: clock.now })
+    store.recordSuccess('r', { result: quota(90, 80), url: 'u' })
+    clock.advance(1000)
+    store.recordSuccess('r', { result: quota(85, 78), url: 'u' })
+
+    const series = store.history('r')
+    assert.equal(series.length, 2)
+    assert.deepEqual(series.map((s) => s.key).sort(), ['w0', 'w1'])
+    const first = series.find((s) => s.key === 'w0')
+    assert.deepEqual(first.points.map((p) => p.pct), [90, 85])
+  })
+
+  it('does not record a failed attempt as a sample', () => {
+    const clock = fakeClock()
+    const store = createStore({ now: clock.now, cooldownMs: 0 })
+    store.recordSuccess('r', { result: quota(90), url: 'u' })
+    store.recordFailure('r', { status: 'http-error', message: 'boom' })
+    assert.equal(store.history('r')[0].points.length, 1)
+  })
+
+  it('skips a window that reported no readable share', () => {
+    const store = createStore({ now: fakeClock().now })
+    store.recordSuccess('r', {
+      result: {
+        kind: 'quota',
+        display: 'x',
+        amount: null,
+        detail: [],
+        windows: [
+          { key: 'good', label: 'a', used: 1, limit: 2, remainingPct: 50 },
+          { key: 'bad', label: 'b', used: null, limit: null, remainingPct: null },
+        ],
+      },
+      url: 'u',
+    })
+    assert.deepEqual(store.history('r').map((s) => s.key), ['good'])
+  })
+
+  it('stores nothing for a balance-only reading', () => {
+    const store = createStore({ now: fakeClock().now })
+    store.recordSuccess('r', {
+      result: { kind: 'balance', currency: 'USD', amount: 5, display: '$5.00', detail: [], windows: [] },
+      url: 'u',
+    })
+    assert.deepEqual(store.history('r'), [])
+  })
+
+  it('bounds the ring so a long-lived process cannot grow without limit', () => {
+    const clock = fakeClock()
+    const store = createStore({ now: clock.now })
+    for (let i = 0; i < HISTORY_POINTS + 25; i++) {
+      store.recordSuccess('r', { result: quota(100 - (i % 10)), url: 'u' })
+      clock.advance(1000)
+    }
+    assert.equal(store.history('r')[0].points.length, HISTORY_POINTS)
+  })
+
+  it('keeps routes apart', () => {
+    const clock = fakeClock()
+    const store = createStore({ now: clock.now })
+    store.recordSuccess('a', { result: quota(50), url: 'u' })
+    store.recordSuccess('b', { result: quota(70), url: 'u' })
+    assert.deepEqual(store.history('a')[0].points.map((p) => p.pct), [50])
+    assert.deepEqual(store.history('b')[0].points.map((p) => p.pct), [70])
+  })
+
+  it('returns copies, so a caller cannot mutate the retained series', () => {
+    const store = createStore({ now: fakeClock().now })
+    store.recordSuccess('r', { result: quota(50), url: 'u' })
+    const series = store.history('r')
+    series[0].points.push({ at: 0, pct: 1 })
+    assert.equal(store.history('r')[0].points.length, 1)
   })
 })
