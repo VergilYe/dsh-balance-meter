@@ -11,7 +11,7 @@
  *   4. the built-in catalog's default for that vendor
  */
 
-import { CATALOG, findById, hostOf, matchRoute } from './catalog.mjs'
+import { ALLOWED_HOSTS, findById, matchRoute } from './catalog.mjs'
 
 /**
  * @typedef {object} RouteInfo
@@ -200,12 +200,14 @@ export function pickPrimaryRoute(routes, primary) {
 /**
  * The complete set of hostnames this plugin may contact, for documentation and
  * for asserting that no other domain is ever requested.
+ *
+ * This is `ALLOWED_HOSTS`, not just the catalog's hosts: a control-plane provider
+ * (OpenDesign) is contacted on a host its route's baseURL never names, so the
+ * catalog alone would under-report the set the plugin actually reaches.
  * @returns {string[]}
  */
 export function allowedHosts() {
-  return CATALOG.flatMap((entry) => entry.hosts).concat(
-    CATALOG.map((entry) => hostOf(entry.baseURL)).filter((host) => typeof host === 'string'),
-  ).filter((host, index, all) => all.indexOf(host) === index).sort()
+  return [...ALLOWED_HOSTS]
 }
 
 export { findById }

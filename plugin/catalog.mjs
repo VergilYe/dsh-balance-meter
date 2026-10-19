@@ -11,6 +11,11 @@
  * than `{base}`, so they stay correct regardless of which path segment the
  * route's baseURL happens to include. `{base}` is supported too, for endpoints
  * a user supplies through config.
+ *
+ * One class of provider does not fit that model: `CONTROL_ENTRIES` below, whose
+ * billing lives on a different host than the inference gateway the route names.
+ * They are kept in a separate list so the origin-template invariant above stays
+ * literally true of every entry in this one.
  */
 
 /** @typedef {'api' | 'subscription'} Billing */
@@ -122,19 +127,63 @@ export const CATALOG = [
   },
 ]
 
-/** Hostnames inside the catalog, i.e. the complete set this plugin will contact. */
+/**
+ * Providers that are NOT origin-template endpoints.
+ *
+ * These are listed apart from `CATALOG` on purpose, because they break the one
+ * invariant the catalog exists to guarantee: that a reading comes from the
+ * route's own host. OpenDesign is the case that forced the split — the route's
+ * baseURL is Link (`amr-link.open-design.ai`, inference only, every billing
+ * path 404s there), while the account's quota and wallet live on the separate
+ * control plane `amr-api.open-design.ai`. No `{origin}` template can express
+ * "a different host", so these rows carry `controlPlane: true` and the host
+ * adapter in `opendesign.mjs` answers them.
+ *
+ * They also differ in credential: nothing here reads the DSH-held runtime key,
+ * which the vendor refuses for billing. `env` stays empty for that reason.
+ *
+ * @type {(CatalogEntry & { controlPlane: true, env: string[] })[]}
+ */
+export const CONTROL_ENTRIES = [
+  {
+    id: 'opendesign',
+    label: 'OpenDesign (AMR)',
+    hosts: ['amr-link.open-design.ai', 'amr-api.open-design.ai'],
+    baseURL: 'https://amr-link.open-design.ai/v1',
+    env: [],
+    endpoint: null,
+    billing: 'subscription',
+    adapter: 'opendesignControl',
+    note: '',
+    controlPlane: true,
+  },
+]
+
+/** Every entry this plugin knows, catalogued or control-plane. */
+const ALL_ENTRIES = [...CATALOG, ...CONTROL_ENTRIES]
+
+/** Hostnames this plugin may contact, i.e. the complete set crossed by any read. */
 export const ALLOWED_HOSTS = Object.freeze(
-  [...new Set(CATALOG.flatMap((entry) => entry.hosts))].sort(),
+  [...new Set(ALL_ENTRIES.flatMap((entry) => entry.hosts))].sort(),
 )
 
 /**
- * Look up a catalog entry by id.
+ * Look up an entry by id, catalogued first.
  * @param {string} id
  * @returns {CatalogEntry | undefined}
  */
 export function findById(id) {
   if (typeof id !== 'string' || id === '') return undefined
-  return CATALOG.find((entry) => entry.id === id)
+  return ALL_ENTRIES.find((entry) => entry.id === id)
+}
+
+/**
+ * True for an entry answered by a host adapter rather than an origin template.
+ * @param {CatalogEntry | undefined} entry
+ * @returns {boolean}
+ */
+export function isControlPlane(entry) {
+  return entry !== undefined && entry !== null && entry.controlPlane === true
 }
 
 /**
@@ -200,7 +249,10 @@ export function matchRoute(route) {
   }
   const host = hostOf(route.baseURL)
   if (host === undefined) return undefined
-  const byHost = CATALOG.find((entry) => entry.hosts.includes(host))
+  // Control-plane rows are matched by host too: a user who only set the
+  // OpenDesign gateway baseURL should still be identified as OpenDesign, rather
+  // than reported as an unknown relay and probed with relay presets.
+  const byHost = ALL_ENTRIES.find((entry) => entry.hosts.includes(host))
   return byHost === undefined ? undefined : { entry: byHost, matchedBy: 'host' }
 }
 
@@ -234,6 +286,10 @@ export function candidateURLs(entry, override = {}) {
   if (typeof override.endpoint === 'string' && override.endpoint.trim() !== '') {
     urls.push(expand(override.endpoint.trim()))
   }
+  // A control-plane entry has no template by design (its URL is not derivable
+  // from the route), and its adapter builds the real URLs itself. An override
+  // is still honoured, so a user can pin an endpoint without this plugin
+  // shipping one.
   if (entry.endpoint !== null) urls.push(expand(entry.endpoint))
   return [...new Set(urls)]
 }

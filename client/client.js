@@ -66,6 +66,7 @@ window.__ModuleLoader__.load({
 			endpoint: 'Endpoint',
 			credential: 'Credential',
 			credentialUnset: 'not set',
+			amrLogin: 'AMR login',
 			quotaWindows: 'Quota windows',
 			resets: 'resets',
 			rawEcho: 'Raw response',
@@ -106,6 +107,7 @@ window.__ModuleLoader__.load({
 			endpoint: '接口地址',
 			credential: '凭据变量',
 			credentialUnset: '未配置',
+			amrLogin: 'AMR 登录态',
 			quotaWindows: '额度窗口',
 			resets: '重置',
 			rawEcho: '原始响应',
@@ -478,9 +480,14 @@ window.__ModuleLoader__.load({
 											h(
 												'span',
 												{ className: 'dsh-balance-val' },
-												route.apiKeyEnv === null || route.apiKeyEnv === ''
-													? `${route.label} · ${t('credentialUnset')}`
-													: `${route.label} · ${route.apiKeyEnv}`,
+												// A control-plane provider is authorised by the AMR login on
+												// disk, so it has no credential variable to name — saying
+												// "credential unset" there would be plainly wrong.
+												route.controlPlane === true
+													? `${route.label} · ${t('amrLogin')}`
+													: route.apiKeyEnv === null || route.apiKeyEnv === ''
+														? `${route.label} · ${t('credentialUnset')}`
+														: `${route.label} · ${route.apiKeyEnv}`,
 											),
 										),
 										route.billing !== null

@@ -23,7 +23,8 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import Schema from '@deepseek-ai/schemastery'
 import { credentialRef, isCredentialRefName } from '@deepseek-ai/dsh-credentials'
 
-import { CATALOG } from './catalog.mjs'
+import { CATALOG, isControlPlane } from './catalog.mjs'
+import { runOpenDesignQuery } from './opendesign.mjs'
 import { runQuery } from './query.mjs'
 import { runPresetQuery } from './presets.mjs'
 import { STATUS, createStore } from './state.mjs'
@@ -261,8 +262,22 @@ export function apply(ctx, config) {
   function queryRoute(route, options = {}) {
     const key = route.id
     return store.coalesce(key, async () => {
-      const { value: apiKey, name: apiKeyEnv } = await resolveKey(route)
       const budget = options.timeoutMs ?? timeoutMs()
+
+      // A control-plane provider (OpenDesign) is read by its own adapter: its
+      // billing lives on a host the route's baseURL does not name, and its
+      // credential is the AMR login's controlKey rather than a DSH-held key.
+      // Resolving a DSH credential for it would be meaningless — the vendor
+      // rejects runtime keys for billing — so it is branched before that.
+      if (isControlPlane(route.entry)) {
+        saveOutcome(key, await runOpenDesignQuery({
+          fetchImpl: fetch,
+          timeoutMs: budget,
+        }))
+        return store.get(key)
+      }
+
+      const { value: apiKey, name: apiKeyEnv } = await resolveKey(route)
 
       // A route the catalogue does not know is still worth probing: it may be a
       // relay panel answering one of the conventional paths. The probe needs a
@@ -663,6 +678,10 @@ export function apply(ctx, config) {
       source: route.source,
       endpoint: route.endpoint,
       note: route.entry?.note ?? '',
+      // A control-plane provider is authorised by the AMR login, not by a
+      // variable in this profile's credential store. Saying so keeps the
+      // browser half from rendering "凭据未设置" for a route that is working.
+      controlPlane: route.entry?.controlPlane === true,
     }
   }
 

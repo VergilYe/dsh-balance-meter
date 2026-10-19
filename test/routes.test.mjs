@@ -204,6 +204,15 @@ describe('allowedHosts', () => {
     assert.ok(hosts.includes('api.deepseek.com'))
   })
 
+  it('includes the OpenDesign control plane, which no route baseURL names', () => {
+    // The route's baseURL is the Link gateway; the billing read goes to a
+    // different host. An allow-list built only from catalog base URLs would
+    // under-report what this plugin actually contacts.
+    const hosts = allowedHosts()
+    assert.ok(hosts.includes('amr-api.open-design.ai'))
+    assert.ok(hosts.includes('amr-link.open-design.ai'))
+  })
+
   it('is sorted and de-duplicated', () => {
     const hosts = allowedHosts()
     assert.deepEqual(hosts, [...hosts].sort())

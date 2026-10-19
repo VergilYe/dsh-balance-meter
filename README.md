@@ -67,6 +67,39 @@ Official domains only; no request ever goes anywhere else.
 | Kimi Coding | `GET /coding/v1/usages` | Subscription windows |
 | MiniMax | `GET /v1/token_plan/remains` | Subscription |
 | OpenCode Go | `GET /zen/go/v1/usage` | Subscription windows |
+| OpenDesign (AMR) | `GET /api/v1/wallet/balance` + `…/billing/coding-plan-usage` (**control plane**) | Subscription windows + wallet |
+
+### Why OpenDesign gets its own row
+
+OpenDesign is the one provider whose **billing is not on the route's host**, so it
+is the one that cannot use an `{origin}` template:
+
+- the route's `baseURL` is the Link inference gateway
+  `amr-link.open-design.ai`, which serves only `/v1/models`,
+  `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/embeddings` and
+  `/v1/images/generations` — **every billing path there is a 404**;
+- balance and Design Plan windows live on the control plane
+  `amr-api.open-design.ai`, a different host;
+- and the credential is not the `sk-amr-…` API key DSH holds. That is a runtime
+  key, which the vendor explicitly rejects for billing reads. The control plane
+  accepts only the **controlKey** that `vela login` / the OpenDesign desktop
+  client writes to `~/.amr/config.json`.
+
+That route is therefore answered by a dedicated adapter (`plugin/opendesign.mjs`)
+which:
+
+1. locates the login the way the vendor's own daemon does:
+   `$AMR_HOME/config.json`, else `~/.amr/config.json`;
+2. selects the profile from `OPEN_DESIGN_AMR_PROFILE` / `VELA_PROFILE`
+   (default `prod`); if the named profile is absent and the file holds exactly one,
+   that one is used — with more than one it reports the ambiguity rather than
+   guessing an account;
+3. reads the wallet and the plan windows with `Authorization: Bearer <controlKey>`;
+4. when the wallet reads but the plan does not, it **still shows the wallet** and
+   lists the reason as a detail row.
+
+Signed out, it reports `no-credential` and names `vela login` — it never treats
+this gateway as an uncatalogued relay and probes relay presets at it.
 
 The credential variable is resolved per route: an adapter-declared `apiKeyEnv` first, then the matching `llm-*` row in the profile's `cordis.patch.yml`, then the catalog default (e.g. `DEEPSEEK_API_KEY`).
 

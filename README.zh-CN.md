@@ -67,6 +67,31 @@ dsh plugin --profile desktop remove @zhujiuyi/dsh-balance
 | Kimi Coding | `GET /coding/v1/usages` | 订阅窗口 |
 | MiniMax | `GET /v1/token_plan/remains` | 订阅 |
 | OpenCode Go | `GET /zen/go/v1/usage` | 订阅窗口 |
+| OpenDesign (AMR) | `GET /api/v1/wallet/balance` + `…/billing/coding-plan-usage`（**控制面**） | 订阅窗口 + 钱包 |
+
+### OpenDesign 为什么单列一行
+
+OpenDesign 是唯一一个**账单不在路由主机上**的供应商，因此它不走 `{origin}` 模板：
+
+- 路由的 `baseURL` 指向 Link 推理网关 `amr-link.open-design.ai`，那里只有
+  `/v1/models`、`/v1/chat/completions`、`/v1/messages`、`/v1/responses`、
+  `/v1/embeddings`、`/v1/images/generations`，**任何账单路径都是 404**；
+- 余额与 Design Plan 窗口在控制面 `amr-api.open-design.ai`，与网关不同主机；
+- 认证也不用 DSH 里那把 `sk-amr-…` API Key —— 那是推理用的 runtime key，
+  官方明确规定它**不能**读账单。控制面只接受 `vela login` / OpenDesign 桌面端
+  写进 `~/.amr/config.json` 的 **controlKey**。
+
+所以这条路由的读取由一个独立适配器完成（`plugin/opendesign.mjs`），它：
+
+1. 按官方同样的规则定位登录态：`$AMR_HOME/config.json`，否则 `~/.amr/config.json`；
+2. 按 `OPEN_DESIGN_AMR_PROFILE` / `VELA_PROFILE` 选档案（默认 `prod`）；
+   若档案名不在文件里且文件只有一个档案，就用那一个，多于一个则如实报错
+   让人指定，绝不猜账号；
+3. 用 `Authorization: Bearer <controlKey>` 读钱包与套餐窗口；
+4. 钱包可读、套餐不可读时**仍然显示钱包**，并把原因作为一行说明列出。
+
+未登录时它返回 `no-credential` 并直接告诉你该跑 `vela login`，而不是把这个网关
+当成未收录的中转站去乱探。
 
 凭据变量按路由解析：优先取适配器声明的 `apiKeyEnv`，其次取 profile 的 `cordis.patch.yml` 里 `llm-*` 行的配置，最后回退到目录默认值（如 `DEEPSEEK_API_KEY`）。
 

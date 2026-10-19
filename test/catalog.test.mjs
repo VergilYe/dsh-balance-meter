@@ -4,16 +4,45 @@ import { describe, it } from 'node:test'
 import {
   ALLOWED_HOSTS,
   CATALOG,
+  CONTROL_ENTRIES,
   candidateURLs,
   findById,
   hostOf,
+  isControlPlane,
   matchRoute,
 } from '../plugin/catalog.mjs'
 
 describe('catalog data', () => {
-  it('has eight entries with unique ids', () => {
+  it('has eight origin-template entries with unique ids', () => {
     assert.equal(CATALOG.length, 8)
     assert.equal(new Set(CATALOG.map((e) => e.id)).size, 8)
+  })
+
+  it('keeps control-plane entries in their own list', () => {
+    assert.equal(CONTROL_ENTRIES.length, 1)
+    const entry = CONTROL_ENTRIES[0]
+    assert.equal(entry.id, 'opendesign')
+    assert.equal(entry.controlPlane, true)
+    // No origin template can cross hosts, so these intentionally have none.
+    assert.equal(entry.endpoint, null)
+    // The runtime key does not authorise billing reads, so no env is declared.
+    assert.deepEqual(entry.env, [])
+    assert.equal(isControlPlane(entry), true)
+    assert.equal(isControlPlane(CATALOG[0]), false)
+    assert.equal(isControlPlane(undefined), false)
+  })
+
+  it('resolves control-plane ids and hosts to the same entry', () => {
+    assert.equal(findById('opendesign')?.label, 'OpenDesign (AMR)')
+    assert.equal(
+      matchRoute({ id: 'opendesign', baseURL: 'https://amr-link.open-design.ai/v1' })?.entry.id,
+      'opendesign',
+    )
+    // A route that only names the gateway host still resolves.
+    assert.equal(
+      matchRoute({ id: 'some-alias', baseURL: 'https://amr-api.open-design.ai' })?.entry.id,
+      'opendesign',
+    )
   })
 
   it('gives every entry a parser adapter, a label, and at least one credential variable', () => {
@@ -183,10 +212,18 @@ describe('candidateURLs', () => {
 
 describe('ALLOWED_HOSTS', () => {
   it('lists every vendor host, and nothing else', () => {
+    // Control-plane rows are real vendor hosts too — they just are not reached
+    // by an origin template — so the guarantee covers the union of both lists.
+    const known = [...CATALOG, ...CONTROL_ENTRIES]
     for (const host of ALLOWED_HOSTS) {
-      assert.ok(CATALOG.some((entry) => entry.hosts.includes(host)), `${host} is not a vendor host`)
+      assert.ok(known.some((entry) => entry.hosts.includes(host)), `${host} is not a vendor host`)
     }
     assert.ok(ALLOWED_HOSTS.includes('api.deepseek.com'))
     assert.ok(!ALLOWED_HOSTS.includes('example.com'))
+  })
+
+  it('covers both the inference gateway and the control plane for OpenDesign', () => {
+    assert.ok(ALLOWED_HOSTS.includes('amr-link.open-design.ai'))
+    assert.ok(ALLOWED_HOSTS.includes('amr-api.open-design.ai'))
   })
 })

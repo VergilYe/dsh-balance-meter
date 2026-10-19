@@ -7,10 +7,16 @@
  */
 
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, it } from 'node:test'
 
 import { apply, name as pluginName, SNAPSHOT_PATH } from '../plugin/index.mjs'
 import { jsonResponse, makeCtx, stubGlobalFetch } from './harness/ctx.mjs'
+
+/** Temp homes created for the OpenDesign tests, removed on teardown. */
+const createdHomes = []
 
 /** Config as DSH would hand it over with no profile overrides. */
 function defaultConfig(overrides = {}) {
@@ -70,6 +76,7 @@ let fetchStub
 afterEach(() => {
   fetchStub?.restore()
   fetchStub = undefined
+  while (createdHomes.length > 0) rmSync(createdHomes.pop(), { recursive: true, force: true })
 })
 
 /** Find a registered tool by name. */
@@ -714,5 +721,93 @@ describe('profile config as a route source', () => {
     const out = JSON.parse(await toolNamed(registered, 'balance_check').execute({}))
     assert.equal(out.route, 'moonshot')
     assert.equal(out.display, '¥7.00')
+  })
+})
+
+describe('opendesign — control-plane route', () => {
+  /** Point AMR_HOME at a temp dir carrying a logged-in profile. */
+  function withAmrHome() {
+    const home = mkdtempSync(join(tmpdir(), 'dsh-amr-host-'))
+    createdHomes.push(home)
+    writeFileSync(join(home, 'config.json'), JSON.stringify({
+      profiles: { prod: { controlKey: 'ctrl-host-test', runtimeKey: 'sk-amr-should-not-be-sent' } },
+    }))
+    const previous = process.env.AMR_HOME
+    process.env.AMR_HOME = home
+    return () => {
+      if (previous === undefined) delete process.env.AMR_HOME
+      else process.env.AMR_HOME = previous
+    }
+  }
+
+  it('answers opendesign from the control plane instead of probing relay presets', async () => {
+    const restore = withAmrHome()
+    try {
+      fetchStub = stubGlobalFetch((url) => {
+        if (url.endsWith('/api/v1/wallet/balance')) {
+          return jsonResponse({ balanceUsd: '12.00', updatedAt: null })
+        }
+        if (url.endsWith('/api/v1/workspaces')) {
+          return jsonResponse({ items: [{ workspaceId: 'ws-1', workspaceType: 'personal' }] })
+        }
+        if (url.includes('/billing/preflight')) {
+          return jsonResponse({
+            balanceUsd: '12.00',
+            codingPlan: {
+              eligible: true,
+              tier: 'plus',
+              windows: [{
+                policyId: 'p7',
+                durationSeconds: 604800,
+                usedCredits: '50',
+                remainingCredits: '50',
+                limitCredits: '100',
+              }],
+            },
+            funding: 'wallet',
+          })
+        }
+        return jsonResponse({}, 404)
+      })
+      const { ctx, registered } = makeCtx({
+        services: { llm: { listProviders: () => [{ id: 'opendesign', baseURL: 'https://amr-link.open-design.ai/v1' }] } },
+      })
+      apply(ctx, defaultConfig())
+      const out = JSON.parse(await toolNamed(registered, 'balance_check').execute({}))
+      assert.equal(out.status, 'ok')
+      assert.equal(out.route, 'opendesign')
+      assert.equal(out.billing, 'subscription')
+      assert.equal(out.currency, 'USD')
+      assert.equal(out.amount, 12)
+      assert.equal(out.windows.length, 1)
+      // Nothing was sent to the inference gateway for billing.
+      for (const call of fetchStub.calls) {
+        assert.ok(call.url.startsWith('https://amr-api.open-design.ai'), call.url)
+        assert.ok(!String(call.init?.headers?.authorization).includes('sk-amr-should-not-be-sent'))
+      }
+    } finally {
+      restore()
+    }
+  })
+
+  it('explains the missing AMR login rather than calling it an unknown provider', async () => {
+    const emptyHome = mkdtempSync(join(tmpdir(), 'dsh-amr-empty-'))
+    createdHomes.push(emptyHome)
+    const previous = process.env.AMR_HOME
+    process.env.AMR_HOME = emptyHome
+    try {
+      fetchStub = stubGlobalFetch(() => jsonResponse({}, 404))
+      const { ctx, registered } = makeCtx({
+        services: { llm: { listProviders: () => [{ id: 'opendesign' }] } },
+      })
+      apply(ctx, defaultConfig())
+      const out = JSON.parse(await toolNamed(registered, 'balance_check').execute({}))
+      assert.equal(out.status, 'no-credential')
+      assert.match(out.message, /controlKey|vela login/)
+      assert.equal(fetchStub.calls.length, 0)
+    } finally {
+      if (previous === undefined) delete process.env.AMR_HOME
+      else process.env.AMR_HOME = previous
+    }
   })
 })
