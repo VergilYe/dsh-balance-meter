@@ -1,5 +1,9 @@
 # Submission for awesome-dsh-plugin
 
+**Status: submitted.** PR #8156 →
+https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/8156
+(opened 2026-10-19, one file only, `mergeable=true`)
+
 Target path in the index repo: `data/plugins/zhujiuyi__dsh-balance-meter.yml`
 
 Open a PR against https://github.com/awesome-dsh-plugin/awesome-dsh-plugin
@@ -33,16 +37,26 @@ rest as a nested key, so the quoting is required, not stylistic.
 | Not a meta-package | ✅ ships behaviour; depends on nothing at runtime |
 | Category reasonable | `usage` = "Usage & Billing" — the entry's whole job |
 
-## Expected listing fields once npm is published
+## Listing fields, now that npm is published
 
-The index derives these from the published npm package, so they appear only
-after `@zhujiuyi/dsh-balance` exists on npmjs:
+`@zhujiuyi/dsh-balance@0.1.0` is live on npmjs (published 2026-10-19), so the
+index can derive these:
 
 - `npm`: `@zhujiuyi/dsh-balance`
-- `version`: whatever `dist-tags.latest` reports
+- `version`: `0.1.0` (`dist-tags.latest`)
 - `install`: `dsh plugin --profile web add @zhujiuyi/dsh-balance`
 - `downloads`: counted from the npm download API
 
-Before the publish, the card would render with `npm: null` / `version: null` and
-an `install` line pointing at GitHub. That is why the npm publish must happen
-first.
+Note for anyone re-verifying: `0.0.0-stage` also appears in the version list.
+That is npm's own placeholder for a newly created scoped package
+(`"stub": true`, "Temporary package placeholder for staged publishing"), not
+something this repo published.
+
+### Why `registry.npmjs.org` may 404 locally
+
+On the machine this was published from, `registry.npmjs.org` resolves to
+`198.18.0.43` — the fake-IP range a proxy's TUN mode hands out — while the real
+Cloudflare addresses are `104.16.x.x`. Queries over that path returned 404 for a
+package that existed; jsDelivr and unpkg (which read npmjs directly) both
+confirmed it. If a local `npm view` says the package is missing, check
+`Resolve-DnsName registry.npmjs.org` before concluding the publish failed.
