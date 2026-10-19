@@ -529,20 +529,6 @@ window.__ModuleLoader__.load({
 				}
 			}, [open])
 
-			// A reading younger than the configured floor is not eligible for an
-			// automatic refresh yet, so the footer says so instead of offering a
-			// button that would be a no-op. Manual refresh still works — it forces.
-			const cooling = React.useMemo(() => {
-				if (busy) return true
-				if (state === undefined || state === null) return false
-				const floor = snapshot !== null && typeof snapshot.minIntervalSec === 'number'
-					? snapshot.minIntervalSec * 1000
-					: 0
-				if (floor <= 0) return false
-				const at = typeof state.queriedAt === 'number' ? state.queriedAt : 0
-				return at > 0 && Date.now() - at < floor
-			}, [busy, state, snapshot])
-
 			const routes = snapshot !== null && Array.isArray(snapshot.routes) ? snapshot.routes : []
 			const states = snapshot !== null && Array.isArray(snapshot.states) ? snapshot.states : []
 			const route = routes[0]
@@ -557,6 +543,20 @@ window.__ModuleLoader__.load({
 				: null
 			const hasValue = value !== null
 			const stale = state !== undefined && state !== null && state.stale === true
+
+			// A reading younger than the configured floor is not eligible for an
+			// automatic refresh yet, so the footer says so instead of offering a
+			// button that would be a no-op. Manual refresh still works — it forces.
+			const cooling = React.useMemo(() => {
+				if (busy) return true
+				if (state === undefined || state === null) return false
+				const floor = snapshot !== null && typeof snapshot.minIntervalSec === 'number'
+					? snapshot.minIntervalSec * 1000
+					: 0
+				if (floor <= 0) return false
+				const at = typeof state.queriedAt === 'number' ? state.queriedAt : 0
+				return at > 0 && Date.now() - at < floor
+			}, [busy, state, snapshot])
 
 			let text = hasValue ? value : t('loading')
 			if (!hasValue && (error !== null || snapshot !== null)) text = t('unavailable')
