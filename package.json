@@ -1,6 +1,6 @@
 {
   "name": "@zhujiuyi/dsh-balance",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DeepSeek Harness plugin: identify the provider behind the current route and query its API balance or subscription quota. No subprocesses, no exec permissions, official endpoints only.",
   "type": "module",
   "main": "plugin/index.mjs",
@@ -14,6 +14,7 @@
     "cordis.patch.yml",
     "README.md",
     "README.zh-CN.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "keywords": [

@@ -1,0 +1,76 @@
+# Changelog
+
+## 0.2.0
+
+### Added — OpenDesign (AMR) support
+
+OpenDesign is the first provider whose billing is **not on the route's host**, and
+the first whose credential is not the DSH-held API key. Both facts forced a
+separate adapter rather than another catalog entry:
+
+- The `opendesign` route points at the inference gateway
+  `amr-link.open-design.ai`, which serves only `/v1/models`,
+  `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/embeddings` and
+  `/v1/images/generations`. Every billing path there returns 404.
+- Balance and Design Plan windows live on the control plane
+  `amr-api.open-design.ai`, a different host. No `{origin}` template can express
+  that, so these rows live in `CONTROL_ENTRIES` and are answered by
+  `plugin/opendesign.mjs`.
+- The control plane rejects the `sk-amr-…` runtime key for billing reads. The
+  plugin therefore reads the `controlKey` that `vela login` / the OpenDesign
+  desktop client writes to `~/.amr/config.json`, resolving `$AMR_HOME` first and
+  the profile from `OPEN_DESIGN_AMR_PROFILE` / `VELA_PROFILE` (default `prod`).
+- One read of `billing/preflight` returns both the wallet balance and the plan
+  windows. The per-window `coding-plan-usage` route the Cloud console uses is
+  session-authenticated only and answers 401 to a controlKey, so it is not used.
+- Partial reads stay honest: a readable wallet with an unreadable plan still
+  shows the wallet and lists the reason as a detail row.
+
+### Added — reading history
+
+The host now keeps the last 80 readings per route and window
+(`state.mjs` → `history()`), and the snapshot carries them. This exists because
+the redesigned panel draws a trend: a curve implies history, so it is drawn only
+from readings that actually happened. With fewer than two samples the panel says
+it is still collecting rather than inventing a line.
+
+### Changed — readout and panel redesign
+
+The trigger and the popover were rebuilt to a telemetry-instrument design:
+a pill trigger with a pulsing status dot, and a panel with a large remaining
+share, a 64-tick ring gauge, segmented per-window bars, a staggered entrance,
+a scan sweep on refresh, and the provider/endpoint/read-time block.
+
+Three deliberate departures from the design mock:
+
+1. the trend is drawn from real readings, not a hardcoded series;
+2. colours resolve through `--dsw-*` theme tokens, while the instrument marks
+   (gauge arc, bar gradient) keep their own palette;
+3. a window with no readable share shows its name and the reason instead of a
+   zero-width bar — 0% would read as "exhausted" when the truth is "unread".
+
+### Fixed
+
+- The readout could disappear entirely from the composer: a `useMemo` referenced
+  `state` before its `const` declaration, which threw
+  `ReferenceError: Cannot access 'state' before initialization` at render time.
+  Syntax checks and the contract check cannot see this class of bug, so
+  `test/client.test.mjs` now renders the real bundle across its states.
+- `allowedHosts()` now returns `ALLOWED_HOSTS`, so the OpenDesign control plane
+  is covered; the previous version only listed catalog base URLs.
+- Reading histories are returned as copies, so a caller cannot mutate them.
+
+### Tests
+
+282 tests, up from 222 before this release (measured with `npm test` on commit
+`eaa5ef4`, the last 0.1.0-tree commit, and on this tree). The additions cover the
+OpenDesign adapter (36), browser-half rendering (10), reading history (8), the
+control-plane catalog entry, and the endpoint/route assertions those changes
+required.
+
+## 0.1.0
+
+Initial release: DeepSeek, OpenRouter, Moonshot/Kimi, SiliconFlow, 智谱 GLM /
+Z.AI, Kimi Coding, MiniMax and OpenCode Go, plus a conventional relay-panel
+preset chain for routes the catalog does not know. No subprocesses, no `exec`
+capability; contact is limited to catalogued vendor hosts.
