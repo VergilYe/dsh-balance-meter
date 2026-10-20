@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.2.1
+
+### Fixed — automatic refresh never renewed the reading on screen
+
+Both automatic triggers (the 15-second tick and `turn/end`) refreshed
+`pickPrimaryRoute()`, the route this plugin would *default* to. The chip asks the
+snapshot route for `?route=<the session's provider>`, which is the route the user
+is actually looking at. With more than one discovered route those two differ — a
+profile with `deepseek` and `opendesign` kept refreshing `deepseek` while the
+panel displayed `opendesign`, so the visible reading could sit unchanged for the
+better part of an hour.
+
+- The snapshot route now records the route it answered for, and the automatic
+  triggers renew that one. `pickPrimaryRoute()` is used only before anything has
+  asked, which is the first-paint case it was meant for.
+
+### Changed — a freshness ceiling
+
+`minIntervalSec` was a floor on how often an automatic refresh may happen, never
+that one happens at all: a route could stay stale indefinitely as long as nothing
+else called. A reading older than the ceiling is now renewed even when the floor
+has not elapsed.
+
+- New setting `staleAfterSec`, default **300** (5 minutes); `0` disables it and
+  restores paced-only behaviour.
+- The failure cooldown still applies, so a route that is erroring is not hammered
+  just because its last good reading is old. `store.mayRetry()` is the gate that
+  ignores pacing but honours the cooldown and the in-flight check.
+- Staleness is measured from the last *successful* read, not the last attempt: a
+  route that keeps failing must not look fresh because the attempts keep coming.
+
+### Tests
+
+288 tests, up from 282. The new cases cover route-target selection (and were
+verified to fail when the fix is reverted — a green test before the fix would have
+been a lie), plus the ceiling's interaction with the pacing floor, the failure
+cooldown, and an in-flight query.
+
 ## 0.2.0
 
 ### Added — OpenDesign (AMR) support

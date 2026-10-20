@@ -44,6 +44,7 @@ window.__ModuleLoader__.load({
 			{ name: 'primary', label: 'fieldPrimary', hint: 'fieldPrimaryHint' },
 			{ name: 'autoRefresh', label: 'fieldAutoRefresh', hint: 'fieldAutoRefreshHint' },
 			{ name: 'minIntervalSec', label: 'fieldMinInterval', hint: 'fieldMinIntervalHint' },
+			{ name: 'staleAfterSec', label: 'fieldStaleAfter', hint: 'fieldStaleAfterHint' },
 		]
 
 		const en = {
@@ -85,6 +86,8 @@ window.__ModuleLoader__.load({
 			fieldAutoRefreshHint: 'Let a finished turn trigger a vendor query, within the interval below.',
 			fieldMinInterval: 'Minimum interval (seconds)',
 			fieldMinIntervalHint: 'Floor between two automatic vendor queries for the same route.',
+			fieldStaleAfter: 'Refresh after (seconds)',
+			fieldStaleAfterHint: 'A reading older than this is renewed even if the floor above has not elapsed. Default 300 (5 minutes); 0 disables it.',
 			save: 'Save',
 			saving: 'Saving…',
 			saved: 'Saved.',
@@ -134,6 +137,8 @@ window.__ModuleLoader__.load({
 			fieldAutoRefreshHint: '允许一轮对话结束后触发供应商查询，仍受下面的最小间隔约束。',
 			fieldMinInterval: '最小刷新间隔（秒）',
 			fieldMinIntervalHint: '同一路由两次自动查询之间的最短间隔。',
+			fieldStaleAfter: '超过多久自动刷新（秒）',
+			fieldStaleAfterHint: '读数超过这个时长就会刷新，即使上面的最小间隔尚未到。默认 300（5 分钟）；填 0 表示不启用。',
 			save: '保存',
 			saving: '保存中…',
 			saved: '已保存。',
@@ -1302,7 +1307,10 @@ window.__ModuleLoader__.load({
 						const node = inputs.current[name]
 						const next = node === null || node === undefined ? '' : String(node.value).trim()
 						if (next === '') return scope.unset(name)
-						if (name === 'minIntervalSec') {
+						// Every numeric setting goes through the same guard: a value
+						// that is not a non-negative finite number is rejected rather
+						// than stored as a string the host would silently ignore.
+						if (name === 'minIntervalSec' || name === 'staleAfterSec') {
 							const seconds = Number(next)
 							if (!Number.isFinite(seconds) || seconds < 0) return Promise.resolve(false)
 							return scope.set(name, seconds)

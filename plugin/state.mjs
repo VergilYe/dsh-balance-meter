@@ -154,6 +154,23 @@ export function createStore(options = {}) {
     },
 
     /**
+     * Decide whether a retry may run now, ignoring the pacing interval.
+     *
+     * This is the gate for a refresh that is *due* rather than *early*: a
+     * reading older than the freshness ceiling must be renewed even though the
+     * minimum interval has not elapsed. The failure cooldown still applies — a
+     * broken route must not be hammered just because its last good reading is
+     * old — and so does the in-flight check.
+     * @param {string} key
+     * @returns {boolean}
+     */
+    mayRetry(key) {
+      const state = ensure(key)
+      if (state.inflight !== null) return false
+      return now() >= state.cooldownUntil
+    },
+
+    /**
      * Run `work` at most once per key while a call is in flight; concurrent
      * callers share the same promise.
      * @template T

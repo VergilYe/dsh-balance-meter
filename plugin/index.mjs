@@ -51,6 +51,20 @@ export const ENTRY_NS = 'balance-meter'
 export const SELF_HEAL_TICK_MS = 15_000
 
 /**
+ * The default freshness ceiling, used when the profile does not override it.
+ *
+ * `minIntervalSec` is a floor on *automatic* refreshes, not a freshness target:
+ * with the floor at 30s and nothing else calling, a route whose chip is visible
+ * still went stale for as long as the page stayed open, because both automatic
+ * triggers happened to fire for a *different* route than the one on screen. This
+ * is the ceiling that guarantees a visible reading is refreshed at least every
+ * five minutes even when no turn ends and no one clicks.
+ *
+ * Overridable through `staleAfterSec`; 0 disables the ceiling.
+ */
+export const MAX_STALE_MS = 5 * 60_000
+
+/**
  * Mark a schema field volatile so the Plugins-page form can edit it live.
  *
  * On DSH >= 0.2 a volatile field resolves to a frozen `{ get() }` reference
@@ -106,6 +120,11 @@ export const Config = Schema.object({
   primary: volatileField(Schema.string().default('')),
   autoRefresh: volatileField(Schema.boolean().default(true)),
   minIntervalSec: volatileField(Schema.number().default(30)),
+  /**
+   * How old a reading may get before it is renewed regardless of
+   * `minIntervalSec`. 0 disables the ceiling, leaving only the paced path.
+   */
+  staleAfterSec: volatileField(Schema.number().default(300)),
   timeoutMs: volatileField(Schema.number().default(8000)),
   failureCooldownSec: volatileField(Schema.number().default(600)),
 })
@@ -130,6 +149,19 @@ export function apply(ctx, config) {
   let llm = undefined
   let connection = undefined
   let configEditor = undefined
+
+  /**
+   * The route the browser is actually displaying, as of its last snapshot read.
+   *
+   * This exists because "the route worth keeping fresh" is not something the host
+   * can derive on its own. The chip asks for `?route=<the session's provider>`,
+   * which is the route a user is looking at; `pickPrimaryRoute()` answers a
+   * different question (which route this plugin would default to) and can name a
+   * different route entirely when a profile has more than one. Auto-refreshing
+   * the default instead of the visible route is why a reading could sit
+   * unrefreshed for the better part of an hour while the tick fired reliably.
+   */
+  let displayedRoute = null
 
   ctx.inject(['credentials'], (cctx) => {
     credentials = cctx.credentials
@@ -363,8 +395,26 @@ export function apply(ctx, config) {
   }
 
   /**
+   * How long a reading may go unrenewed before a refresh is due regardless of
+   * the pacing floor. 0 (or a negative) disables the ceiling, which restores the
+   * old "paced only" behaviour.
+   * @returns {number}
+   */
+  function staleAfterMs() {
+    const value = Number(cfg('staleAfterSec'))
+    if (!Number.isFinite(value)) return MAX_STALE_MS
+    if (value <= 0) return 0
+    return Math.min(value, 24 * 60 * 60) * 1000
+  }
+
+  /**
    * Refresh a set of routes, subject to the auto-refresh policy.
-   * @param {{ routes?: object[], force?: boolean, only?: string }} [input]
+   *
+   * `staleAfterMs` is a ceiling, not a floor: when a reading is older than it,
+   * the attempt goes ahead even if `minIntervalSec` has not elapsed. That is how
+   * a visible route keeps renewing on a long-lived page — the floor alone only
+   * bounds how often a refresh may happen, never that one happens at all.
+   * @param {{ routes?: object[], force?: boolean, only?: string, staleAfterMs?: number }} [input]
    * @returns {Promise<object[]>}
    */
   async function refresh(input = {}) {
@@ -384,6 +434,7 @@ export function apply(ctx, config) {
     const results = []
     for (const route of selected) {
       const state = store.get(route.id)
+      const stale = isStale(state, input.staleAfterMs)
       const attempt = input.force === true
         ? true
         // A cold read is the one automatic query that is not on a timer: until
@@ -392,7 +443,13 @@ export function apply(ctx, config) {
         // query to become useful.
         : input.cold === true
           ? state.attemptedAt === null
-          : store.mayAutoRefresh(route.id, minIntervalMs())
+          // A reading past the freshness ceiling is renewed regardless of the
+          // per-route floor. The failure cooldown still applies, so a broken
+          // route is not hammered — `clearCooldown` is what a manual refresh and
+          // `?refresh=1` use to override that.
+          : stale
+            ? store.mayRetry(route.id)
+            : store.mayAutoRefresh(route.id, minIntervalMs())
       if (!attempt) {
         results.push(state)
         continue
@@ -403,14 +460,45 @@ export function apply(ctx, config) {
   }
 
   /**
-   * Refresh only the route the chip describes, which is the one worth keeping
-   * fresh automatically. The rest are refreshed on demand.
+   * Whether a route's last successful reading is older than `staleAfterMs`.
+   *
+   * Measured from `queriedAt` (the last *successful* read), not from the last
+   * attempt: a route that keeps failing should not look fresh just because the
+   * attempts keep happening.
+   * @param {object} state
+   * @param {number | undefined} staleAfterMs
+   * @returns {boolean}
+   */
+  function isStale(state, staleAfterMs) {
+    if (!Number.isFinite(staleAfterMs) || staleAfterMs <= 0) return false
+    if (state === undefined || state === null) return false
+    const at = typeof state.queriedAt === 'number' ? state.queriedAt : null
+    // A route that has never read successfully is handled by the cold path; it
+    // is not "stale", it is empty.
+    if (at === null) return false
+    return Date.now() - at >= staleAfterMs
+  }
+
+  /**
+   * Refresh the route the chip is actually showing, which is the one worth
+   * keeping fresh automatically. The rest are refreshed on demand.
+   *
+   * Target selection is the crux. The browser tells the host which route it
+   * displays via `?route=`; that is the route whose reading the user sees, and
+   * therefore the only one whose staleness matters. `pickPrimaryRoute()` is the
+   * fallback for when nothing has asked yet (first paint), not the target —
+   * using it unconditionally is what let a profile with more than one discovered
+   * route keep refreshing a route nobody was looking at.
    * @param {boolean} force
    */
   async function refreshPrimary(force) {
-    const primary = pickPrimaryRoute(knownRoutes(), textOf(cfg('primary')))
+    const list = knownRoutes()
+    const shown = displayedRoute === null
+      ? null
+      : list.find((route) => route.id === displayedRoute) ?? null
+    const primary = shown ?? pickPrimaryRoute(list, textOf(cfg('primary')))
     if (primary === null) return
-    await refresh({ routes: [primary], force })
+    await refresh({ routes: [primary], force, staleAfterMs: staleAfterMs() })
   }
 
   // ── tools ────────────────────────────────────────────────────────────────
@@ -594,9 +682,19 @@ export function apply(ctx, config) {
       // put the plugin at a continuous request-per-interval rate and turned
       // every transient blip into a visible failure. A poll is a cache read
       // plus, for a route that has never been tried, one cold query so the
-      // readout can show something at all. Freshness comes from the periodic
-      // tick, `turn/end`, and an explicit `?refresh=1`.
-      await refresh({ routes: selected, force: wantsRefresh === true, cold: wantsRefresh !== true })
+      // readout can show something at all.
+      //
+      // Freshness comes from the periodic tick, `turn/end`, and an explicit
+      // `?refresh=1`. The tick needs to know *which* route to renew, so the
+      // selected route is remembered here: this read is the only signal the host
+      // gets about what the user is actually looking at.
+      displayedRoute = selected.length === 0 ? null : selected[0].id
+      await refresh({
+        routes: selected,
+        force: wantsRefresh === true,
+        cold: wantsRefresh !== true,
+        staleAfterMs: staleAfterMs(),
+      })
 
       const keys = new Set(selected.map((route) => route.id))
       const payload = {
@@ -611,6 +709,8 @@ export function apply(ctx, config) {
         ),
         autoRefresh: cfg('autoRefresh') !== false,
         minIntervalSec: Math.round(minIntervalMs() / 1000),
+        // 0 means the ceiling is off; the panel renders that as "no ceiling".
+        staleAfterSec: Math.round(staleAfterMs() / 1000),
         catalogSize: CATALOG.length,
         known: list.length,
       }

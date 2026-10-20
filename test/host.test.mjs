@@ -811,3 +811,148 @@ describe('opendesign — control-plane route', () => {
     }
   })
 })
+describe('automatic refresh targets the displayed route', () => {
+  /**
+   * A profile with two catalogued routes: `deepseek` first (which
+   * pickPrimaryRoute would choose) and `opendesign` (the one the browser asks
+   * for). This is the exact shape that let a reading go stale for an hour.
+   */
+  function twoRouteContext() {
+    const routes = []
+    const harness = makeCtx({
+      services: {
+        credentials: { resolve: async () => ({ value: 'sk-x', source: 'file' }) },
+        llm: {
+          listProviders: () => [
+            { id: 'deepseek', baseURL: 'https://api.deepseek.com' },
+            { id: 'opendesign', baseURL: 'https://amr-link.open-design.ai/v1' },
+          ],
+        },
+        connection: { fetch: { register: (route) => routes.push(route) } },
+      },
+    })
+    return { ...harness, routes }
+  }
+
+  /** Invoke the snapshot handler with a route scope. */
+  async function snapshot(routes, query = '') {
+    const handler = routes.find((route) => route.path === SNAPSHOT_PATH)
+    assert.ok(handler !== undefined, 'snapshot route was not registered')
+    const response = await handler.fetch(new Request(`http://localhost${SNAPSHOT_PATH}${query}`))
+    return { response, body: await response.json() }
+  }
+
+  /** Count vendor calls whose URL belongs to one vendor. */
+  function callsTo(host) {
+    return fetchStub.calls.filter((call) => call.url.includes(host)).length
+  }
+
+  it('renews the route the browser asked for, not the default route', async () => {
+    // Prefetch once so both routes have a reading, then let time pass beyond the
+    // freshness ceiling and tick: the route on screen must be the one queried.
+    fetchStub = stubGlobalFetch((url) => {
+      if (url.includes('deepseek')) return jsonResponse(DEEPSEEK_BODY)
+      if (url.includes('open-design')) {
+        return jsonResponse({ balanceUsd: '1.00', codingPlan: { tier: 'go', windows: [] } })
+      }
+      return jsonResponse({}, 404)
+    })
+    const harness = twoRouteContext()
+    apply(harness.ctx, defaultConfig({ minIntervalSec: 0 }))
+
+    // The chip names opendesign, as the session model does.
+    await snapshot(harness.routes, '?route=opendesign')
+    const openBefore = callsTo('open-design')
+
+    // Simulate the reading ageing past the ceiling by ticking after the clock
+    // has moved; the harness clock is real, so assert the policy directly.
+    await harness.tickIntervals()
+    const openAfter = callsTo('open-design')
+    assert.ok(
+      openAfter > openBefore,
+      'the periodic tick must query the displayed (opendesign) route',
+    )
+  })
+
+  it('does not let the default route starve the displayed one', async () => {
+    fetchStub = stubGlobalFetch((url) => {
+      if (url.includes('deepseek')) return jsonResponse(DEEPSEEK_BODY)
+      if (url.includes('open-design')) {
+        return jsonResponse({ balanceUsd: '2.00', codingPlan: { tier: 'go', windows: [] } })
+      }
+      return jsonResponse({}, 404)
+    })
+    const harness = twoRouteContext()
+    apply(harness.ctx, defaultConfig({ minIntervalSec: 0 }))
+
+    await snapshot(harness.routes, '?route=opendesign')
+    const deepseekBefore = callsTo('api.deepseek.com')
+    await harness.tickIntervals()
+    const deepseekAfter = callsTo('api.deepseek.com')
+    assert.equal(
+      deepseekAfter,
+      deepseekBefore,
+      'the tick must not refresh a route the user is not looking at',
+    )
+  })
+
+  it('falls back to the default route before anything has asked', async () => {
+    fetchStub = stubGlobalFetch(() => jsonResponse(DEEPSEEK_BODY))
+    const harness = twoRouteContext()
+    apply(harness.ctx, defaultConfig({ minIntervalSec: 0 }))
+    await harness.tickIntervals()
+    assert.ok(callsTo('api.deepseek.com') > 0, 'with no display hint the default is refreshed')
+  })
+})
+describe('freshness ceiling', () => {
+  /**
+   * The ceiling exists because `minIntervalSec` is a floor on how often a
+   * refresh may happen, never that one happens at all. This drives the store
+   * clock directly, because the harness uses real time and five minutes is not
+   * something a test should wait for.
+   */
+  it('renews a reading past the ceiling even when the floor has not elapsed', async () => {
+    const { createStore } = await import('../plugin/state.mjs')
+    let at = 1_000_000
+    const store = createStore({ now: () => at, minIntervalMs: 30_000, cooldownMs: 600_000 })
+    store.recordSuccess('r', { result: { display: 'x', windows: [] }, url: 'u' })
+
+    // Immediately after: neither gate allows it.
+    assert.equal(store.mayAutoRefresh('r', 30_000), false, 'the floor blocks an early refresh')
+
+    // Past the floor but under the ceiling: the floor now allows it.
+    at += 60_000
+    assert.equal(store.mayAutoRefresh('r', 30_000), true)
+
+    // Past the ceiling: a due refresh is allowed even while the floor would also
+    // allow it — the ceiling's job is to force the attempt, so prove it does so
+    // when the floor is configured absurdly high.
+    at += 10 * 60_000
+    assert.equal(store.mayAutoRefresh('r', 60 * 60_000), false, 'a huge floor blocks the paced path')
+    assert.equal(store.mayRetry('r'), true, 'but a due refresh may still run')
+  })
+
+  it('keeps the failure cooldown in force for a due refresh', async () => {
+    const { createStore } = await import('../plugin/state.mjs')
+    let at = 1_000_000
+    const store = createStore({ now: () => at, minIntervalMs: 30_000, cooldownMs: 600_000 })
+    store.recordSuccess('r', { result: { display: 'x', windows: [] }, url: 'u' })
+    store.recordFailure('r', { status: 'http-error', message: 'boom' })
+    // A route that just failed must not be retried immediately just because its
+    // last good reading is old.
+    assert.equal(store.mayRetry('r'), false, 'the cooldown still gates a due refresh')
+    at += 600_001
+    assert.equal(store.mayRetry('r'), true, 'and releases once the cooldown ends')
+  })
+
+  it('does not retry while a query is already in flight', async () => {
+    const { createStore } = await import('../plugin/state.mjs')
+    const store = createStore({ now: () => 1_000_000, cooldownMs: 0 })
+    let release
+    const pending = store.coalesce('r', () => new Promise((resolve) => { release = resolve }))
+    assert.equal(store.mayRetry('r'), false)
+    release('done')
+    await pending
+    assert.equal(store.mayRetry('r'), true)
+  })
+})
