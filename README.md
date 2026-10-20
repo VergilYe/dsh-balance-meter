@@ -1,39 +1,92 @@
 [中文](README.zh-CN.md) | **English**
 
-# dsh-balance-meter
+# Balance & Quota · dsh-balance-meter
 
-A native **DeepSeek Harness (DSH)** plugin: read the provider behind your current model route, then query its **API balance** or **subscription quota**.
+> A small plugin for DeepSeek Harness: **it tells you how much credit or quota is left for the model you're actually using.**
 
-A readout sits in the session header, with a popover listing every route. On the model side a `balance_check` tool lets the agent answer "how much credit is left?" on demand.
+No control panels to open, no mental arithmetic, and no being fooled by a stale number — if it genuinely can't read your balance, it says why.
 
-This is the DSH counterpart of [ccgui-plugin-balance-meter](https://github.com/zhujiuyi/ccgui-plugin-balance-meter). Because DSH exposes natively what that host lacked, this version **requests no `exec` capability, spawns no subprocess, and probes no relay stations**:
+![The balance readout under the composer](docs/images/chip.png)
 
-| | CC GUI version | This plugin |
+Click it to open the full panel:
+
+![The balance and quota panel](docs/images/panel.png)
+
+---
+
+## What problem it solves
+
+Running an agent on API credit or a subscription, two things bite:
+
+1. **You run out mid-task** and only find out when it breaks.
+2. **You juggle several dashboards** — DeepSeek, Kimi, Zhipu — and they don't even report the same thing: some give money, some give percentages.
+
+This plugin gathers it into one place: **whichever provider your current session is using, it reads that provider's balance** and shows it the same way every time.
+
+---
+
+## What it can read
+
+Balances are **per provider**, not per model — every model under one provider shares the same pool.
+
+### ✅ Supported: 9 built-in providers
+
+| Provider | What it reads | Shown as |
 |---|---|---|
-| Credentials | parses each engine's config file, needs `exec:curl` | `ctx.credentials`, no shell |
-| Network | host egress required a declared domain, so `exec:curl` | plain `fetch` in the host process |
-| Route identity | sniffs gateway hostnames | `ctx.llm.listProviders()` + profile config |
+| **DeepSeek** | account balance | money (`¥12.34`) |
+| **OpenRouter** | key credit | money |
+| **Moonshot / Kimi** | account balance | money |
+| **SiliconFlow** | account balance | money |
+| **智谱 GLM / Z.AI** | subscription quota | window percentages |
+| **Kimi Coding** | subscription quota | window percentages |
+| **MiniMax** | plan quota | window percentages |
+| **OpenCode Go** | subscription quota | window percentages |
+| **OpenDesign (AMR)** | wallet + Design Plan windows | money + percentages |
+
+"Window percentages" means the plugin lists each quota period separately — rolling / weekly / monthly — with its own bar and reset time. So you can tell whether the 5-hour window is nearly spent or the monthly total is running out.
+
+### ⚠️ May work: common relay panels
+
+If you use a **self-hosted relay** (New-API, Sub2API, CloseAI, claude-code-hub and similar), the plugin tries a set of conventional endpoints in order:
+
+```
+/api/usage/token/  →  /v1/dashboard/billing/subscription  →  /v1/usage
+→  /api/v1/me/quota  →  /dashboard/billing/credit_grants
+→  /api/v1/credits  →  /api/user/self
+```
+
+Whichever returns a readable figure first wins. **An endpoint you configure yourself is tried before all of them.**
+
+> The mechanism (ordering, short-circuiting, unit calibration) is covered by tests, but **each preset's response shape was transcribed from public panel documentation and the author cannot verify them all against live servers**. So an unrecognised shape is reported as "reachable but unparseable" with the raw response attached — never guessed at.
+
+### ❌ Not supported
+
+| Situation | What happens |
+|---|---|
+| **The vendor has no public balance endpoint** | Says so plainly; invents nothing |
+| **Route isn't in the catalog and no preset matched** | Reports "not catalogued" plus the last raw response |
+| **No credential configured** | Names the variable you need to set |
+| **Endpoint answered but the shape is unknown** | Reports "unparseable" with an excerpt (secrets masked) |
+
+"Not catalogued" means **this plugin doesn't recognise that provider yet** — it does not mean the vendor has no balance endpoint. Setting a custom endpoint via `balance_set_endpoint` usually fixes it.
+
+---
 
 ## Install
 
-The npm package is **`@zhujiuyi/dsh-balance`**. Install it from the release tarball:
-
 ```sh
-dsh plugin --profile desktop add https://github.com/zhujiuyi/dsh-balance-meter/releases/latest/download/zhujiuyi-dsh-balance-0.1.0.tgz
+dsh plugin --profile desktop add @zhujiuyi/dsh-balance
 ```
 
-Or straight from the repository:
+Then **restart DSH**. The readout appears on the stats row under the composer.
+
+> Don't install `dsh-balance-meter` (no scope). That name belongs to an unrelated package on npm.
+
+Installing from the repository works too:
 
 ```sh
 dsh plugin --profile desktop add github:zhujiuyi/dsh-balance-meter
 ```
-
-> **Do not run `dsh plugin add dsh-balance-meter`.** That unscoped name belongs to an
-> unrelated package on npm, and the command would install that one instead.
-
-Restart DSH. A `@zhujiuyi/dsh-balance` card appears on the Plugins page and the readout appears on the composer status row.
-
-After editing the source, run the same command again to overwrite it (same package name) — no uninstall first.
 
 Uninstall:
 
@@ -41,121 +94,60 @@ Uninstall:
 dsh plugin --profile desktop remove @zhujiuyi/dsh-balance
 ```
 
-## What it shows
+---
 
-**The status row under the composer** — the same row as the built-in `1 turn 6 steps · 165 tok/s` pills, to their left. A balance route shows money (`¥12.34`); a subscription shows remaining quota (`每月 剩 47%`). Click for a popover with:
+## Using it
 
-- the vendor, billing mode, credential variable, endpoint, and when it was last read
-- for subscriptions, every quota window (rolling / weekly / monthly) with a remaining-share bar and its reset time
-- a **Refresh now** button that bypasses the failure cooldown
+Mostly you don't do anything. Three ways in:
 
-**It reports only the provider the current session actually uses.** The route comes from that session's model selection (`current.provider` in `modelDirectories`), not from every adapter registered in the build — `listProviders()` reports built-ins like `deepseek-official` and `deepseek-account` that the user never configured, and listing those is noise.
+1. **Glance** — the readout is always on the stats row: money for API credit, a percentage for subscriptions.
+2. **Click** — provider, billing mode, endpoint, last-read time, and every quota window with its own bar.
+3. **Ask** — say "how much quota is left" and the agent calls the `balance_check` tool.
 
-**Readings can be stale.** When an automatic query fails but a previous one succeeded, the readout keeps the older figure, labels it stale, and the popover states the failure. A stale number is never presented as current.
+---
 
-## Catalogued providers
+## On getting the number right
 
-Official domains only; no request ever goes anywhere else.
+This is what the plugin cares about most. Three rules:
 
-| Provider | Endpoint | Billing |
-|---|---|---|
-| DeepSeek | `GET /user/balance` | API balance |
-| OpenRouter | `GET /api/v1/key` | API balance |
-| Moonshot / Kimi | `GET /v1/users/me/balance` | API balance |
-| SiliconFlow | `GET /v1/user/info` | API balance |
-| 智谱 GLM / Z.AI | `GET /api/monitor/usage/quota/limit` | Subscription windows |
-| Kimi Coding | `GET /coding/v1/usages` | Subscription windows |
-| MiniMax | `GET /v1/token_plan/remains` | Subscription |
-| OpenCode Go | `GET /zen/go/v1/usage` | Subscription windows |
-| OpenDesign (AMR) | `GET /api/v1/wallet/balance` + `…/billing/coding-plan-usage` (**control plane**) | Subscription windows + wallet |
+**1. It never guesses.** If it can't read a figure it says so and explains why. "Unavailable" beats a plausible-looking wrong number.
 
-### Why OpenDesign gets its own row
+**2. Stale figures are labelled.** If a refresh fails after a previous success, the readout keeps showing the last known value marked "possibly stale", with the failure reason in the details. An old number is never passed off as current.
 
-OpenDesign is the one provider whose **billing is not on the route's host**, so it
-is the one that cannot use an `{origin}` template:
+**3. The trend chart uses real readings only.** That curve comes from reads that actually happened, not a hardcoded sample series. With fewer than two readings it says it's still collecting rather than drawing a fake history.
 
-- the route's `baseURL` is the Link inference gateway
-  `amr-link.open-design.ai`, which serves only `/v1/models`,
-  `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/embeddings` and
-  `/v1/images/generations` — **every billing path there is a 404**;
-- balance and Design Plan windows live on the control plane
-  `amr-api.open-design.ai`, a different host;
-- and the credential is not the `sk-amr-…` API key DSH holds. That is a runtime
-  key, which the vendor explicitly rejects for billing reads. The control plane
-  accepts only the **controlKey** that `vela login` / the OpenDesign desktop
-  client writes to `~/.amr/config.json`.
+### When it refreshes automatically
 
-That route is therefore answered by a dedicated adapter (`plugin/opendesign.mjs`)
-which:
+- **After each finished turn** — refreshed once
+- **A background check every 15 seconds** — refreshes if policy allows
+- **A reading older than 5 minutes** — forced refresh (configurable)
+- **You click "Refresh now"** — always
 
-1. locates the login the way the vendor's own daemon does:
-   `$AMR_HOME/config.json`, else `~/.amr/config.json`;
-2. selects the profile from `OPEN_DESIGN_AMR_PROFILE` / `VELA_PROFILE`
-   (default `prod`); if the named profile is absent and the file holds exactly one,
-   that one is used — with more than one it reports the ambiguity rather than
-   guessing an account;
-3. reads the wallet and the plan windows with `Authorization: Bearer <controlKey>`;
-4. when the wallet reads but the plan does not, it **still shows the wallet** and
-   lists the reason as a detail row.
+Two limits keep it polite: a **minimum interval** (30s by default) and a **failure cooldown**. Nothing polls while the page is hidden.
 
-Signed out, it reports `no-credential` and names `vela login` — it never treats
-this gateway as an uncatalogued relay and probes relay presets at it.
+---
 
-The credential variable is resolved per route: an adapter-declared `apiKeyEnv` first, then the matching `llm-*` row in the profile's `cordis.patch.yml`, then the catalog default (e.g. `DEEPSEEK_API_KEY`).
+## OpenDesign users: one extra step
 
-## The four ways a query can miss
+OpenDesign is the only provider whose **billing is not on the API gateway host**, and it needs a login first:
 
-The core promise is **never to guess a number**. Every non-success lands in exactly one of these, each saying what to do next:
+```sh
+vela login          # or sign in through the OpenDesign desktop app
+```
 
-| Status | Meaning |
-|---|---|
-| `no-credential` | the credential variable exists but is unset — names the variable to configure |
-| `unknown-provider` | **this plugin has not catalogued the route** and the preset chain below missed too — which is *not* the same as the vendor having no endpoint |
-| `no-public-endpoint` | catalogued, and that vendor definitively has no public endpoint |
-| `parse-failed` | HTTP 200, but the response shape is unrecognised — **echoes a raw response fragment** |
+That writes a credential to `~/.amr/config.json`, which the plugin reads.
 
-## Preset endpoint probing
+**Why this is required:** the `sk-amr-…` API key you configure in DSH is a *runtime* key for inference, and the vendor explicitly rejects it for billing reads. Balance can only be read with the control key that signing in produces.
 
-A route outside the built-in catalogue is **not given up on**. A fixed sequence of conventional relay-panel endpoints is tried, and the first that yields a readable figure wins:
+Signed out, the plugin tells you to run `vela login` — it never treats that gateway as an uncatalogued relay and starts probing it.
 
-| # | Endpoint | Where it comes from |
-|---|---|---|
-| 1 | `GET /api/usage/token/` | New-API ≥ v0.9.0 — remaining quota in one call |
-| 2 | `GET /v1/dashboard/billing/subscription` | OpenAI-style billing, in cents |
-| 3 | `GET /v1/usage` | Sub2API family |
-| 4 | `GET /api/v1/me/quota` | claude-code-hub, which uses an `X-Api-Key` header |
-| 5 | `GET /dashboard/billing/credit_grants` | CloseAI family |
-| 6 | `GET /api/v1/credits` | — |
-| 7 | `GET /api/user/self` | New-API variants |
-
-Presets 1 and 7 first make one **unauthenticated** `GET /api/status` read to pick up the panel's own `quota_per_unit` — a New-API operator can change the accounting unit, and hardcoding 500000 would be off by orders of magnitude.
-
-**An endpoint you set outranks all of them**: the value written by `balance_set_endpoint` or `routes[].endpoint` is tried first, because that is the thing you actually know. If none of the presets fit, setting one is the fix.
-
-A 401 or 403 **stops the chain** — every remaining path would use the same credential.
-
-**Scope of the claim:** the mechanism (order, short-circuit, calibration, fallback) is tested and every extraction path has a fixture, but **the preset shapes themselves are transcribed from the reference project's panel catalogue and could not be re-verified per vendor**. A preset that mismatches therefore reports `parse-failed` and echoes its response, rather than returning a wrong number.
-
-## Id aliases in the catalogue
-
-Adapters name their own routes `deepseek-official`, `deepseek-account` and the like. Those resolve to the vendor's entry once the suffix is stripped, instead of being called uncatalogued — the vendor is plainly known. A genuinely unrelated id (say `deepseek-proxy`) is still reported as uncatalogued.
-
-Echoing the body on `parse-failed` is deliberate: the eight response shapes were compiled from vendor documentation, and **the author holds no keys for these vendors, so none could be verified against a live API during development.** The echo is how you see what actually came back.
-
-Echoed bodies are redacted (`sk-…`, `Bearer …`, `{ "api_key": … }` and similar become `***`) and truncated to 800 characters.
-
-## Permissions and privacy
-
-- **No `exec` capability, no subprocess.** No shell, no `curl`, no process spawning.
-- **Requests go only to the gateway of the route you configured in DSH.** No third-party domain, no telemetry, no reporting back. A catalogued route is queried at its vendor's official endpoint; an uncatalogued one only ever at its own base URL (see *Preset endpoint probing*).
-- **A key only ever goes to its own gateway.** Read through `ctx.credentials.resolve()`, placed in a request header, never written to disk, logs, or the browser snapshot. The snapshot carries the credential *variable name* and no value — there is a test asserting this.
-- **No other DSH configuration is touched.** `balance_set_endpoint` edits only this plugin's own row `config`.
+---
 
 ## Configuration
 
-Plugins page → the `@zhujiuyi/dsh-balance` card → the form edits the primary route, the auto-refresh switch, and the minimum interval.
+Plugins page → the `@zhujiuyi/dsh-balance` card: preferred route, auto-refresh on/off, minimum interval, and the refresh-after ceiling.
 
-Route overrides (custom endpoints, different credential variables) go through the tool, or by editing the `balance-meter` row in the profile's `cordis.patch.yml`:
+To pin a custom endpoint or credential variable for one route, edit the `balance-meter` row in your profile's `cordis.patch.yml`:
 
 ```yaml
 - id: balance-meter
@@ -169,83 +161,50 @@ Route overrides (custom endpoints, different credential variables) go through th
         endpoint: '{origin}/v1/balance'
 ```
 
-Endpoint templates accept `{origin}` (the route's scheme and host) and `{base}` (the route's base URL). Prefer `{origin}`: it stays correct no matter which path segment the configured base URL carries.
+Templates support `{origin}` (scheme + host) and `{base}` (the full baseURL). Prefer `{origin}` — it doesn't care whether your baseURL carries a path segment.
 
-## Tools
+---
 
-**`balance_check`** — `{ route?, refresh? }`, returning structured JSON: route, vendor, billing mode, status, figure or quota windows, endpoint, query time. With no `route` it queries the route the header shows.
+## Privacy
 
-**`balance_set_endpoint`** — `{ route, endpoint }`, persists a custom endpoint into this profile's `cordis.patch.yml`, applied immediately. An empty `endpoint` clears the override.
+- **No `exec` permission, no subprocesses** — no shell, no curl.
+- **Requests go only to the gateway you configured** — no third-party domains, no telemetry, no phone-home.
+- **Keys are used for that gateway only** — read from DSH's credential store, put in a request header, never written to disk, logs, or the browser snapshot. The snapshot carries variable *names* only (there's a test asserting this).
+- **Nothing else in DSH is modified** — only this plugin's own config row.
 
-> Writing `routes` sends the plugin row through the Loader's normal lifecycle (effectively a reload), so the in-memory cache resets and the readout re-queries on its next poll. That is a schemastery structural limit rather than a choice: array elements are always validated as "blocked", so a volatile field can never appear inside an array — and since route ids are user-chosen, no schema shape would make route overrides volatile (and volatile is what buys an in-place update without a reload).
+---
 
-## How it works
-
-```
-DSH host process                               browser
-┌────────────────────────────────────┐       ┌────────────────────┐
-│ @zhujiuyi/dsh-balance (host half)      │       │ @zhujiuyi/dsh-balance  │
-│                                    │       │ (browser half)     │
-│ ctx.llm.listProviders()  ─┐        │       │                    │
-│ llm-* rows via             ├→ routes│       │  header readout    │
-│   configEditor            ─┤        │       │    ↓ fetch         │
-│ built-in catalog          ─┘        │       │  /api/balance-     │
-│                        ↓           │       │   meter/snapshot   │
-│ ctx.credentials.resolve()          │       │    ↑               │
-│                        ↓           │       │    │               │
-│ fetch(vendor) → parse → cache      │──────→│    │               │
-│                        ↓           │ JSON  │    │               │
-│ ctx.tools.register ×2              │       │  config form       │
-└────────────────────────────────────┘       └────────────────────┘
-```
-
-**Refresh policy.** The host holds no timer, and nothing guesses when a turn ended.
-
-- **After every turn**, the host listens for the session log's `turn/end` event and refreshes the current route. That event name is not guessed — it was read out of a real `session.v4.jsonl.zstd` (`{"type":"turn/end","data":{"turn":1,"reason":{…}}}`).
-- **The host wakes every 15s** to decide whether to refresh. That is a tick, not the refresh rate — `minIntervalSec` and the cooldown still decide whether a tick becomes a vendor request. **This tick is what makes the readout self-healing**: with `turn/end` as the only trigger, an idle session had no way to recover.
-- **The browser half** reads a snapshot every 10s, and that is a **local cache read that does not touch the vendor**. It queries exactly once in one case: when the route has **never been read** — on plugin load, or right after you switch models. Otherwise a new figure arrives from the tick, `turn/end`, or your own refresh.
-- Vendor requests are throttled by `minIntervalSec` (default 30s) and the failure cooldown, so a burst of turns cannot become a burst of vendor requests. A hidden page does not poll.
-- **How long a failure waits depends on whether there is anything to show.** With a reading already on screen it waits the full `failureCooldownSec` (default 600s) — the figure is still there, so waiting is only being polite. With **no** reading it waits 15s and backs off exponentially from there, capped at the same setting — because then the cooldown *is* what the user sees: a blank readout, with no reason to make them wait ten minutes.
-- **A failed query never blanks the readout.** The host keeps the last successful figure and marks the snapshot `stale`, so the readout keeps showing it labelled *stale* with the reason in the detail panel. Only a route that has never succeeded reads as *Unavailable*.
-
-**Caching.** The endpoint that worked is cached per route; after every candidate fails the route enters a 10-minute cooldown; concurrent queries for one route coalesce into a single in-flight request.
-
-## Known differences from the reference implementation
-
-- **Different surface.** The reference sits in the status bar; this one sits on the status row under the composer, which in DSH's slot system is `conversation.composer.dock` — the row the built-in session-stats pills use.
-- **Which window the readout shows: shortest span first.** 5-hour → weekly → monthly, taking the first that reports a figure. That order is the order in which each window can block you, and a subscription is managed against its nearest cycle. It is deliberately *not* the window with the least remaining, which would sit on the monthly figure permanently. Only when no window's span is recognisable does it fall back to least-remaining.
-- **An uncatalogued route is stated, not papered over.** When the preset chain misses too, the readout says *Unavailable*, explains that **this plugin has not catalogued it**, and carries the last raw response rather than inventing a figure.
-
-## Which response shapes are verified
-
-The eight parsers were written from vendor documentation, and the author holds no keys for these vendors — **only OpenCode Go has been checked against a live response**, which is what fixed it:
-
-```json
-{"usage":{"rolling":{"status":"ok","percent":0,"resetsAt":"…"},
-          "weekly":{"status":"ok","percent":8,"resetsAt":"…"},
-          "monthly":{"status":"ok","percent":53,"resetsAt":"…"}}}
-```
-
-`percent` here is a **used** share, not a remaining one. That is inferable rather than assumed: a live account read `rolling: 0` while actively completing turns, which cannot mean "0% remaining". The remaining figure is derived from it, and the raw value is kept in the window note (`原始 percent=53`) so a change of convention at the vendor would be visible immediately.
-
-If any of the other seven disagrees with its documentation, it reports `parse-failed` and echoes the response — send that echo and it can be corrected.
-
-## Development
+## For developers
 
 ```sh
-npm run verify   # static contract check + the full test suite
-npm test         # 209 tests, no DSH required
-npm run check    # static contract check only
+npm run verify   # static contract check + all tests
+npm test         # 288 tests, no DSH install required
+npm run check    # contract check only
 ```
 
-Tests come in three layers, all runnable **without DSH**:
+Four layers, none needing DSH: pure logic (parsers, preset chain, cache/throttle), host integration (stubs for `@deepseek-ai/*`, running the real `apply()`), a static contract check, and **browser-half render tests** (real `client.js` loaded with a minimal React stub and rendered across its states).
 
-- **Pure logic** — catalog matching and id aliases, the eight response parsers, the seven-preset probe chain, cache/throttle/cooldown/coalescing, route discovery — with an injected clock and fetch, so results are deterministic.
-- **Host-half integration** — stubs stand in for the `@deepseek-ai/*` packages and the real `apply()` runs, covering tool registration, credential resolution, the snapshot route, and config writes.
-- **Static contract** — `package.json`, `cordis.patch.yml` and the browser half checked for self-consistency: every bare import declared, the bundle patch naming this package, the module id equal to the package name, and `files` shipping both entry points.
-- **Schema guard** (`test/config-schema.test.mjs`) — validates `Config`'s volatile paths against a stub that mirrors the real rule. Mirroring it rather than waving it through matters: a structurally invalid `Config` fails no behavioural test, it just stops the plugin activating in a user's install. `routes[].id` escaped that way once.
+That last layer earns its keep: a `useMemo` referencing a `const` declared below it is a runtime scope error — invisible to `node --check` and to the contract check, but it crashes the component and makes the readout disappear. That happened once.
 
-The design spec is at [docs/superpowers/specs/2026-10-14-dsh-balance-meter-design.md](docs/superpowers/specs/2026-10-14-dsh-balance-meter-design.md) (Chinese).
+### Verification status
+
+Of the 9 providers, **only OpenCode Go and OpenDesign have been checked against real responses** and had their parsers corrected. The rest report "reachable but unparseable" with an excerpt if their shape differs from the docs — send that excerpt and it gets fixed.
+
+### Differences from the reference implementation
+
+This is the DSH port of [ccgui-plugin-balance-meter](https://github.com/zhujiuyi/ccgui-plugin-balance-meter) (a CC GUI plugin). Because DSH provides credentials and outbound HTTP natively, this version **needs no exec permission**:
+
+| | CC GUI version | This plugin |
+|---|---|---|
+| Reading credentials | Parses each engine's config, needs `exec:curl` | `ctx.credentials` directly |
+| Networking | Host requires pre-declared domains, hence `exec:curl` | Plain `fetch` in-process |
+| Route detection | Sniffs gateway hostnames | `ctx.llm.listProviders()` + profile |
+
+Also: the readout sits on the composer stats row (`conversation.composer.dock`) rather than a status bar, and it reports the **shortest period first** (5-hour → weekly → monthly) — the window most likely to stop you first.
+
+Design spec: [docs/superpowers/specs/2026-10-14-dsh-balance-meter-design.md](docs/superpowers/specs/2026-10-14-dsh-balance-meter-design.md).
+
+---
 
 ## License
 
