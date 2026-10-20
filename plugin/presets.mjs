@@ -20,6 +20,7 @@
 
 import { clampPct, findObjects, firstNum, firstString, num, pick } from './parse.mjs'
 import { STATUS } from './state.mjs'
+import { fetchWithRetry } from './transport.mjs'
 
 /** How many bytes of a preset response may be echoed on failure. */
 const ECHO_LIMIT = 400
@@ -410,16 +411,23 @@ export async function runPresetQuery(input) {
     lastUrl = url
 
     const call = async (target, header) => {
-      const response = await fetchImpl(target, {
-        method: 'GET',
-        headers: {
+      // Retried through the shared transport helper for the same reason as the
+      // catalog path: a cold connection to a relay panel can be reset before it
+      // is established, and one such reset must not be reported as "the relay is
+      // unreadable".
+      const attempt = await fetchWithRetry(
+        fetchImpl,
+        target,
+        {
           accept: 'application/json',
           ...(header === undefined
             ? { authorization: `Bearer ${apiKey}` }
             : { [header.name]: `${header.scheme}${apiKey}` }),
         },
-        signal: withTimeout(input.signal, timeoutMs),
-      })
+        withTimeout(input.signal, timeoutMs),
+      )
+      if (attempt.response === null) throw attempt.error
+      const response = attempt.response
       const text = await response.text()
       return { response, text }
     }

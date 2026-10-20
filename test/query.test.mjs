@@ -216,3 +216,37 @@ describe('echoOf', () => {
     assert.ok(out.length < RAW_ECHO_LIMIT + 100)
   })
 })
+
+describe('runQuery — cold-connection recovery', () => {
+  /** The rejection `fetch` produces when a fresh TLS connection is reset. */
+  function resetError(code = 'ECONNRESET') {
+    const error = new TypeError('fetch failed')
+    error.cause = Object.assign(new Error(code), { code })
+    return error
+  }
+
+  it('recovers a reading when the first connection is reset', async () => {
+    // Measured on a real machine: opencode.ai reset 2 of 4 cold connections while
+    // warm ones succeeded every time. A single reset must not become a visible
+    // "请求失败：fetch failed" on the panel's first read.
+    const fetchImpl = stubFetch([resetError(), json(DEEPSEEK_OK)])
+    const result = await query(fetchImpl)
+    assert.equal(result.status, STATUS.OK)
+    assert.equal(result.result.display, '¥12.34')
+    assert.equal(result.message, null, 'a recovered attempt must leave no failure message')
+  })
+
+  it('still reports a genuine network failure after the retries run out', async () => {
+    const fetchImpl = stubFetch([resetError(), resetError(), resetError()])
+    const result = await query(fetchImpl)
+    assert.equal(result.status, STATUS.NETWORK_ERROR)
+    assert.match(result.message, /请求失败/)
+  })
+
+  it('does not pay the retry cost for an HTTP rejection', async () => {
+    // A 401 is final: one request, no second attempt.
+    const fetchImpl = stubFetch([new Response('nope', { status: 401 })])
+    await query(fetchImpl)
+    assert.equal(fetchImpl.calls.length, 1, 'a 401 must not be retried')
+  })
+})

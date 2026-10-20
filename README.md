@@ -178,7 +178,7 @@ Templates support `{origin}` (scheme + host) and `{base}` (the full baseURL). Pr
 
 ```sh
 npm run verify   # static contract check + all tests
-npm test         # 288 tests, no DSH install required
+npm test         # 305 tests, no DSH install required
 npm run check    # contract check only
 ```
 

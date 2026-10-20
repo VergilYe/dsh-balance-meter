@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.2.2
+
+### Fixed — the first read failed with "请求失败：fetch failed"
+
+A fresh TLS connection to some of these hosts is intermittently reset before it is
+established. Measured on a real machine, cold connections to `opencode.ai` failed
+2 of 4 attempts with `ECONNRESET` (and `amr-link.open-design.ai` 1 of 4) while a
+warm connection then succeeded ten times in a row.
+
+Because the plugin made exactly one attempt per endpoint, and a catalogued route
+has only one candidate URL, a single reset became the visible result: the panel
+opened showing `请求失败：fetch failed`, and a later trigger worked — the
+"only fails the first time" symptom. It was never specific to one vendor.
+
+- New `plugin/transport.mjs` retries transient transport failures once (two
+  attempts, 150 ms apart). A cold-connection reset now recovers instead of
+  surfacing.
+- Wired into all three network paths: the catalog query, the relay-preset chain,
+  and the OpenDesign control-plane adapter. The policy lives in one place so the
+  three cannot drift apart.
+- What is **not** retried, deliberately: HTTP statuses (a 401 will still be 401,
+  so the query layer's "stop after a credential rejection" stays intact) and
+  cancellations (including deadlines — a timeout has already spent its budget).
+- Measured effect: 8 cold attempts against `opencode.ai` went from 1 failure
+  without the retry to 0 with it.
+
+### Tests
+
+305 tests, up from 288. `test/transport.test.mjs` pins the retry policy, and
+`test/query.test.mjs` proves the query layer recovers a reading that a reset
+would previously have turned into an error. Both were verified to fail when the
+retry is disabled.
+
 ## 0.2.1
 
 ### Fixed — automatic refresh never renewed the reading on screen

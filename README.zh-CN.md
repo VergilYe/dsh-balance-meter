@@ -180,7 +180,7 @@ vela login          # 或在 OpenDesign 桌面端登录
 
 ```sh
 npm run verify   # 静态契约检查 + 全部测试
-npm test         # 288 个测试，不需要安装 DSH
+npm test         # 305 个测试，不需要安装 DSH
 npm run check    # 只跑静态契约检查
 ```
 

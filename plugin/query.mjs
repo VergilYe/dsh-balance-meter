@@ -7,6 +7,7 @@
 import { candidateURLs } from './catalog.mjs'
 import { ParseError, parseResponse } from './parse.mjs'
 import { STATUS } from './state.mjs'
+import { fetchWithRetry } from './transport.mjs'
 
 /** How much of an unparseable response body is echoed back for diagnosis. */
 export const RAW_ECHO_LIMIT = 800
@@ -117,23 +118,27 @@ export async function runQuery(input) {
   }
 
   for (const url of urls) {
-    let response
-    try {
-      response = await fetchImpl(url, {
-        method: 'GET',
-        headers: { accept: 'application/json', authorization: `Bearer ${apiKey}` },
-        signal: withTimeout(input.signal, timeoutMs),
-      })
-    } catch (error) {
+    // A cold TLS connection to some of these hosts is intermittently reset, which
+    // showed up as "请求失败：fetch failed" on the panel's very first read and then
+    // worked on the next trigger. The retry is inside the transport helper, so
+    // every caller gets it without repeating the policy.
+    const attempt = await fetchWithRetry(
+      fetchImpl,
+      url,
+      { accept: 'application/json', authorization: `Bearer ${apiKey}` },
+      withTimeout(input.signal, timeoutMs),
+    )
+    if (attempt.response === null) {
       lastFailure = {
         status: STATUS.NETWORK_ERROR,
         result: null,
         url,
-        message: `请求失败：${errorMessage(error)}`,
+        message: `请求失败：${errorMessage(attempt.error)}`,
         raw: null,
       }
       continue
     }
+    const response = attempt.response
 
     let body = ''
     try {

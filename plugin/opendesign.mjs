@@ -48,6 +48,7 @@ import { join } from 'node:path'
 
 import { clampPct, formatMoney } from './parse.mjs'
 import { STATUS } from './state.mjs'
+import { fetchWithRetry } from './transport.mjs'
 
 /** Hosts this adapter may contact. Exported so the docs can assert the set. */
 export const OPEN_DESIGN_HOSTS = Object.freeze([
@@ -655,12 +656,14 @@ async function readWorkspace(input, apiUrl, headers, timeoutMs, signal) {
 async function getJson(fetchImpl, url, headers, timeoutMs, outerSignal) {
   const timeout = AbortSignal.timeout(timeoutMs)
   const signal = outerSignal === undefined ? timeout : AbortSignal.any([outerSignal, timeout])
-  let response
-  try {
-    response = await fetchImpl(url, { headers, signal })
-  } catch (error) {
-    return { ok: false, status: null, body: null, raw: '', error }
+  // The same cold-connection reset measured on this host (1 in 4 fresh TLS
+  // connections) is retried here, so a first read is not reported as a network
+  // failure that then "fixes itself" on the next trigger.
+  const attempt = await fetchWithRetry(fetchImpl, url, headers, signal)
+  if (attempt.response === null) {
+    return { ok: false, status: null, body: null, raw: '', error: attempt.error }
   }
+  const response = attempt.response
   const raw = await response.text().catch(() => '')
   if (!response.ok) return { ok: false, status: response.status, body: null, raw, error: null }
   try {
