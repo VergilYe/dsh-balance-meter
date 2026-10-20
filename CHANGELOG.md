@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.5
+
+This is the first release published to npm since **0.2.0**, so it carries the
+0.2.1 and 0.2.2 fixes with it. If you are upgrading from 0.2.0, read those two
+sections below — both were real, user-visible bugs.
+
+Summary of what changed since 0.2.0:
+
+- **Automatic refresh actually renews the reading you are looking at.** It used
+  to renew the *default* route instead, so a profile with more than one provider
+  could show a reading that never updated.
+- **A reading older than 5 minutes is refreshed** even when the minimum interval
+  has not elapsed. New `staleAfterSec` setting (default 300; 0 disables).
+- **The first read no longer fails** with `请求失败：fetch failed` on a cold
+  connection. Transient transport failures are retried once.
+- README rewritten for humans, with screenshots (`docs/images/`).
+
 ## 0.2.2
 
 ### Fixed — the first read failed with "请求失败：fetch failed"
